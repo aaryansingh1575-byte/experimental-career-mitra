@@ -1,208 +1,795 @@
-export const maxDuration = 60;
+export const maxDuration = 10;
 
-export default async function handler(req, res) {
-  if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    return res.status(204).end();
+/* =========================================================
+   CAREERMITRA
+   FREE AI + FREE WEB RESEARCH API
+   AI: OpenRouter Free Model
+   WEB SEARCH: Public Bing RSS
+   ========================================================= */
+
+
+/* =========================================================
+   TEXT CLEANING
+   ========================================================= */
+
+function cleanText(value) {
+  return String(value || "")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x27;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+
+/* =========================================================
+   EXTRACT EXACT CAREER
+   ========================================================= */
+
+function extractCareer(prompt) {
+  const text = String(prompt || "").trim();
+
+  const patterns = [
+    /career\s+of\s+(.+?)(?:\s+in\s+India|\s+in\s+india|[.!?]\s|$)/i,
+
+    /dream\s+career\s*:\s*["“']?(.+?)["”']?(?:\n|$)/i,
+
+    /exact\s+career\s*:\s*["“']?(.+?)["”']?(?:\n|$)/i,
+
+    /non[- ]negotiable\s*:\s*["“']?(.+?)["”']?(?:\n|$)/i,
+
+    /career\s*:\s*["“']?(.+?)["”']?(?:\n|$)/i,
+
+    /role\s*:\s*["“']?(.+?)["”']?(?:\n|$)/i
+  ];
+
+  for (const regex of patterns) {
+    const match = text.match(regex);
+
+    if (match?.[1]) {
+      let career = match[1]
+        .trim()
+        .replace(/^["“']/, "")
+        .replace(/["”']$/, "")
+        .replace(/[.,;]+$/, "")
+        .trim();
+
+      if (career.length > 2) {
+        return career;
+      }
+    }
   }
 
-  if (req.method !== 'POST') {
-    return res.status(405).json({ ok: false, error: 'Method not allowed' });
+  let fallback = text
+    .replace(
+      /research\s+(the\s+)?career\s+(of\s+)?/i,
+      ""
+    )
+    .replace(
+      /return\s+(the\s+)?requested\s+career\s+research\s+json\.?/i,
+      ""
+    )
+    .replace(
+      /return\s+json\s+only\.?/i,
+      ""
+    )
+    .trim();
+
+  const indiaIndex =
+    fallback.toLowerCase().indexOf(" in india");
+
+  if (indiaIndex > 0) {
+    fallback =
+      fallback.slice(0, indiaIndex);
   }
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({
-      ok: false,
-      error: 'OPENAI_API_KEY is not configured on the server.'
+  return fallback.slice(0, 180).trim();
+}
+
+
+/* =========================================================
+   BAD / IRRELEVANT SOURCE FILTER
+   ========================================================= */
+
+function isBadResult(result) {
+  const text = (
+    `${result.title} ${result.url} ${result.snippet}`
+  ).toLowerCase();
+
+  const badDomains = [
+    "merriam-webster.com",
+    "dictionary.cambridge.org",
+    "wiktionary.org",
+    "dictionary.com",
+    "thesaurus.com",
+    "wordnik.com",
+    "yourdictionary.com",
+    "collinsdictionary.com"
+  ];
+
+  for (const domain of badDomains) {
+    if (text.includes(domain)) {
+      return true;
+    }
+  }
+
+  const badPhrases = [
+    "dictionary definition",
+    "meaning of",
+    "definition of",
+    "pronunciation",
+    "synonyms",
+    "antonyms"
+  ];
+
+  let score = 0;
+
+  for (const phrase of badPhrases) {
+    if (text.includes(phrase)) {
+      score++;
+    }
+  }
+
+  return score >= 2;
+}
+
+
+/* =========================================================
+   FREE PUBLIC WEB SEARCH
+   ========================================================= */
+
+async function searchWeb(query) {
+  const url =
+    "https://www.bing.com/search?format=rss&q=" +
+    encodeURIComponent(query);
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (compatible; CareerMitra/1.0)"
+      }
     });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const xml = await response.text();
+
+    const items =
+      xml.match(/<item>[\s\S]*?<\/item>/gi) || [];
+
+    const results = [];
+
+    for (const item of items.slice(0, 8)) {
+      const titleMatch =
+        item.match(
+          /<title>([\s\S]*?)<\/title>/i
+        );
+
+      const linkMatch =
+        item.match(
+          /<link>([\s\S]*?)<\/link>/i
+        );
+
+      const descriptionMatch =
+        item.match(
+          /<description>([\s\S]*?)<\/description>/i
+        );
+
+      const title = titleMatch
+        ? cleanText(titleMatch[1])
+        : "";
+
+      const link = linkMatch
+        ? cleanText(linkMatch[1])
+        : "";
+
+      const snippet = descriptionMatch
+        ? cleanText(descriptionMatch[1])
+        : "";
+
+      if (
+        title &&
+        link &&
+        /^https?:\/\//i.test(link)
+      ) {
+        const result = {
+          title,
+          url: link,
+          snippet
+        };
+
+        if (!isBadResult(result)) {
+          results.push(result);
+        }
+      }
+    }
+
+    return results;
+
+  } catch {
+    return [];
+  }
+}
+
+
+/* =========================================================
+   SOURCE QUALITY
+   ========================================================= */
+
+function sourcePriority(url) {
+  const value =
+    String(url || "").toLowerCase();
+
+  if (
+    value.includes(".gov.in") ||
+    value.includes(".gov")
+  ) {
+    return 100;
   }
 
-  const prompt = req.body?.prompt;
-  const webSearch = req.body?.webSearch === true;
-
-  if (typeof prompt !== 'string' || !prompt.trim()) {
-    return res.status(400).json({ ok: false, error: 'A prompt is required.' });
+  if (value.includes("nmc.org.in")) {
+    return 99;
   }
 
-  if (prompt.length > 60000) {
-    return res.status(413).json({ ok: false, error: 'Prompt is too large.' });
+  if (value.includes("who.int")) {
+    return 97;
+  }
+
+  if (value.includes("aaos.org")) {
+    return 96;
+  }
+
+  if (value.includes("ncbi.nlm.nih.gov")) {
+    return 95;
+  }
+
+  if (
+    value.includes("pubmed.ncbi.nlm.nih.gov")
+  ) {
+    return 94;
+  }
+
+  if (value.includes("mayoclinic.org")) {
+    return 92;
+  }
+
+  if (value.includes("clevelandclinic.org")) {
+    return 92;
+  }
+
+  if (value.includes("apollohospitals.com")) {
+    return 85;
+  }
+
+  if (value.includes("fortishealthcare.com")) {
+    return 85;
+  }
+
+  if (value.includes("manipalhospitals.com")) {
+    return 85;
+  }
+
+  if (value.includes("indeed.com")) {
+    return 65;
+  }
+
+  if (value.includes("linkedin.com")) {
+    return 64;
+  }
+
+  if (value.includes("glassdoor.")) {
+    return 62;
+  }
+
+  if (value.includes("reddit.com")) {
+    return 50;
+  }
+
+  return 40;
+}
+
+
+/* =========================================================
+   EXTRACT AI RESPONSE
+   ========================================================= */
+
+function extractModelText(data) {
+  if (!data) {
+    return "";
+  }
+
+  if (
+    typeof data.output_text === "string" &&
+    data.output_text.trim()
+  ) {
+    return data.output_text.trim();
+  }
+
+  if (
+    typeof data.choices?.[0]?.message?.content ===
+      "string" &&
+    data.choices[0].message.content.trim()
+  ) {
+    return data
+      .choices[0]
+      .message
+      .content
+      .trim();
+  }
+
+  const content =
+    data.choices?.[0]?.message?.content;
+
+  if (Array.isArray(content)) {
+    const text = content
+      .map(part => {
+        if (typeof part === "string") {
+          return part;
+        }
+
+        return part?.text || "";
+      })
+      .join("\n")
+      .trim();
+
+    if (text) {
+      return text;
+    }
+  }
+
+  return "";
+}
+
+
+/* =========================================================
+   JSON PARSER
+   ========================================================= */
+
+function parseJSON(text) {
+  if (!text) {
+    return null;
   }
 
   try {
-    const payload = {
-      model: webSearch
-        ? (process.env.OPENAI_WEB_MODEL || process.env.OPENAI_MODEL || 'gpt-5.5')
-        : (process.env.OPENAI_MODEL || 'gpt-6-luna'),
-      input: prompt,
-      max_output_tokens: webSearch ? 7000 : 5000
-    };
+    return JSON.parse(text);
+  } catch {}
 
-    if (webSearch) {
-      payload.tools = [{
-        type: 'web_search',
-        search_context_size: 'high',
-        external_web_access: true
-      }];
+  const fenced =
+    text.match(
+      /```(?:json)?\s*([\s\S]*?)```/i
+    );
 
-      // This is critical: CareerMitra's button explicitly means
-      // "research this career from the internet", so search must run.
-      payload.tool_choice = 'required';
+  if (fenced) {
+    try {
+      return JSON.parse(
+        fenced[1].trim()
+      );
+    } catch {}
+  }
 
-      // Return the complete list of URLs consulted by web search.
-      payload.include = ['web_search_call.action.sources'];
-    }
+  const start =
+    text.indexOf("{");
 
-    const response = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
+  const end =
+    text.lastIndexOf("}");
+
+  if (
+    start !== -1 &&
+    end !== -1 &&
+    end > start
+  ) {
+    try {
+      return JSON.parse(
+        text.slice(start, end + 1)
+      );
+    } catch {}
+  }
+
+  return null;
+}
+
+
+/* =========================================================
+   OPENROUTER FREE AI
+   ========================================================= */
+
+async function callAI(prompt) {
+  const apiKey =
+    process.env.OPENROUTER_API_KEY;
+
+  if (!apiKey) {
+    throw new Error(
+      "OPENROUTER_API_KEY is missing in Vercel."
+    );
+  }
+
+  const response = await fetch(
+    "https://openrouter.ai/api/v1/chat/completions",
+    {
+      method: "POST",
+
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
+        Authorization:
+          `Bearer ${apiKey}`,
+
+        "Content-Type":
+          "application/json",
+
+        "HTTP-Referer":
+          "https://careermitra-zeta.vercel.app/",
+
+        "X-Title":
+          "CareerMitra"
       },
-      body: JSON.stringify(payload)
+
+      body: JSON.stringify({
+        /*
+         * Specific FREE model.
+         * This avoids random routing through
+         * openrouter/free.
+         */
+        model:
+          "nvidia/nemotron-3-ultra-550b-a55b:free",
+
+        messages: [
+          {
+            role: "system",
+
+            content:
+              `
+You are CareerMitra.
+
+You are a factual career research assistant.
+
+Use the supplied internet evidence.
+
+Never invent current salary figures,
+market statistics,
+requirements,
+or sources.
+
+If exact evidence is unavailable,
+say so.
+
+Reddit, forums and personal experiences
+must be labelled anecdotal.
+
+When JSON is requested,
+return valid JSON only.
+`
+          },
+
+          {
+            role: "user",
+
+            content: prompt
+          }
+        ],
+
+        temperature: 0.2,
+
+        max_tokens: 2500
+      })
+    }
+  );
+
+  const raw =
+    await response.text();
+
+  let data;
+
+  try {
+    data =
+      JSON.parse(raw);
+  } catch {
+    throw new Error(
+      "OpenRouter returned invalid JSON."
+    );
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      data?.error?.message ||
+      `OpenRouter HTTP ${response.status}`
+    );
+  }
+
+  const text =
+    extractModelText(data);
+
+  if (!text) {
+    throw new Error(
+      "OpenRouter returned an empty AI response."
+    );
+  }
+
+  return text;
+}
+
+
+/* =========================================================
+   MAIN VERCEL HANDLER
+   ========================================================= */
+
+export default async function handler(
+  req,
+  res
+) {
+  if (req.method !== "POST") {
+    return res.status(405).json({
+      ok: false,
+      error: "Method not allowed"
     });
+  }
 
-    const raw = await response.text();
-    let data = null;
-    try { data = JSON.parse(raw); } catch { data = null; }
+  try {
+    const prompt =
+      typeof req.body?.prompt === "string"
+        ? req.body.prompt.trim()
+        : "";
 
-    if (!response.ok) {
-      console.error('OpenAI API error:', response.status, data || raw);
-      return res.status(502).json({
+    if (!prompt) {
+      return res.status(400).json({
         ok: false,
-        error:
-          data?.error?.message ||
-          data?.message ||
-          `AI provider request failed (HTTP ${response.status}).`
+        error: "Missing prompt"
       });
     }
 
-    let text = '';
-    const sources = [];
+    const webSearch =
+      req.body?.webSearch === true;
 
-    if (typeof data?.output_text === 'string') {
-      text = data.output_text.trim();
-    }
+    let finalPrompt =
+      prompt;
 
-    for (const item of Array.isArray(data?.output) ? data.output : []) {
-      // Web-search output can contain source metadata separately from the final message.
-      const actionSources = item?.action?.sources;
-      if (Array.isArray(actionSources)) {
-        for (const src of actionSources) {
-          const u = src?.url;
-          if (u && !sources.some(x => x.url === u)) {
-            sources.push({
-              title: String(src?.title || u),
-              url: String(u)
-            });
-          }
+    let sources = [];
+
+
+    /* =====================================================
+       LIVE WEB RESEARCH
+       ===================================================== */
+
+    if (webSearch) {
+      const career =
+        extractCareer(prompt);
+
+      /*
+       * Multiple focused searches.
+       */
+
+      const queries = [
+        `${career} India career salary jobs`,
+
+        `${career} India qualifications career path`,
+
+        `${career} India demand future jobs`,
+
+        `${career} India professional requirements`,
+
+        `${career} India training education`,
+
+        `${career} India job opportunities`,
+
+        `${career} Reddit experience career`
+      ];
+
+
+      /* ---------- SEARCH IN PARALLEL ---------- */
+
+      const searchResults =
+        await Promise.all(
+          queries.map(
+            query => searchWeb(query)
+          )
+        );
+
+
+      /* ---------- DEDUPLICATE ---------- */
+
+      const seen =
+        new Set();
+
+      for (
+        const result
+        of searchResults.flat()
+      ) {
+        if (
+          result?.url &&
+          !seen.has(result.url)
+        ) {
+          seen.add(result.url);
+
+          sources.push(result);
         }
       }
 
-      if (!Array.isArray(item?.content)) continue;
 
-      for (const content of item.content) {
-        if (!text && content?.type === 'output_text' && typeof content?.text === 'string') {
-          text += content.text;
-        }
+      /* ---------- QUALITY SORT ---------- */
 
-        const annotations = Array.isArray(content?.annotations)
-          ? content.annotations
-          : [];
+      sources.sort(
+        (a, b) =>
+          sourcePriority(b.url) -
+          sourcePriority(a.url)
+      );
 
-        for (const ann of annotations) {
-          if (ann?.type !== 'url_citation') continue;
-          const u = ann?.url || ann?.url_citation?.url;
-          const title = ann?.title || ann?.url_citation?.title || u;
-          if (u && !sources.some(x => x.url === u)) {
-            sources.push({ title: String(title), url: String(u) });
-          }
-        }
-      }
+
+      /* ---------- LIMIT ---------- */
+
+      sources =
+        sources.slice(0, 12);
+
+
+      /* ---------- RESEARCH TEXT ---------- */
+
+      const researchText =
+        sources.length
+          ? sources
+              .map(
+                (source, index) =>
+                  `
+[SOURCE ${index + 1}]
+
+Title:
+${source.title}
+
+URL:
+${source.url}
+
+Information:
+${source.snippet}
+`
+              )
+              .join("\n")
+          : `
+No relevant web search results
+were retrieved.
+`;
+
+
+      /* ===================================================
+         AI RESEARCH PROMPT
+         =================================================== */
+
+      finalPrompt = `
+
+You are CareerMitra's live career research engine.
+
+
+EXACT CAREER:
+
+${career}
+
+
+USER REQUEST:
+
+${prompt}
+
+
+CURRENT INTERNET RESEARCH:
+
+${researchText}
+
+
+TASK:
+
+Create a factual and practical report
+about the EXACT career above.
+
+
+RETURN ONLY VALID JSON:
+
+{
+  "career": "",
+  "what_it_involves": "",
+  "pros": [],
+  "cons": [],
+  "earning_reality_india": "",
+  "market_requirements": [],
+  "demand": "",
+  "growth_future": "",
+  "step_by_step_path": [],
+  "same_level_alternatives": [],
+  "struggles_barriers": [],
+  "rewards_beyond_money": [],
+  "anecdotal_reviews": [],
+  "sources": []
+}
+
+
+RULES:
+
+1. Focus ONLY on the exact career.
+
+2. Use the supplied internet results
+   for current claims.
+
+3. Never invent salary numbers.
+
+4. If reliable salary evidence is missing,
+   say:
+   "Exact salary data unavailable
+   in the retrieved sources."
+
+5. Never invent demand statistics.
+
+6. Give a practical India-specific
+   career path when supported by evidence.
+
+7. Reddit/forums/personal experiences
+   must be labelled anecdotal.
+
+8. Do not claim anecdotal discussion
+   represents the entire profession.
+
+9. sources[] must contain URLs
+   from the supplied search results.
+
+10. Do not invent URLs.
+
+11. Prefer government sources,
+    professional organizations,
+    universities,
+    medical organizations,
+    peer-reviewed research,
+    established hospitals,
+    and recognized employment sources.
+
+12. Keep the answer concise.
+
+13. Return JSON only.
+
+`;
     }
 
-    if (!text && Array.isArray(data?.output)) {
-      for (const item of data.output) {
-        for (const content of Array.isArray(item?.content) ? item.content : []) {
-          if (typeof content?.text === 'string') text += content.text;
-        }
-      }
-      text = text.trim();
-    }
 
-    if (!text) {
-      console.error('AI returned no usable text:', JSON.stringify(data).slice(0, 8000));
-      return res.status(502).json({ ok: false, error: 'AI returned no text.' });
-    }
+    /* =====================================================
+       AI GENERATION
+       ===================================================== */
 
-    let cleaned = text
-      .trim()
-      .replace(/^```json\s*/i, '')
-      .replace(/^```\s*/i, '')
-      .replace(/\s*```$/i, '')
-      .trim();
+    const modelText =
+      await callAI(finalPrompt);
 
-    let parsed = null;
 
-    try {
-      parsed = JSON.parse(cleaned);
-    } catch {}
+    /* =====================================================
+       PARSE
+       ===================================================== */
 
-    if (!parsed) {
-      const start = cleaned.indexOf('{');
-      if (start !== -1) {
-        let depth = 0;
-        let inString = false;
-        let escaped = false;
+    const parsed =
+      parseJSON(modelText);
 
-        for (let i = start; i < cleaned.length; i++) {
-          const ch = cleaned[i];
 
-          if (escaped) {
-            escaped = false;
-            continue;
-          }
-          if (ch === '\\' && inString) {
-            escaped = true;
-            continue;
-          }
-          if (ch === '"') {
-            inString = !inString;
-            continue;
-          }
-          if (inString) continue;
-
-          if (ch === '{') depth++;
-          if (ch === '}') {
-            depth--;
-            if (depth === 0) {
-              try {
-                parsed = JSON.parse(cleaned.slice(start, i + 1));
-              } catch {}
-              break;
-            }
-          }
-        }
-      }
-    }
-
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      console.error('Invalid AI JSON:', text.slice(0, 4000));
-      return res.status(502).json({ ok: false, error: 'AI returned invalid JSON.' });
-    }
+    /* =====================================================
+       FINAL RESPONSE
+       ===================================================== */
 
     return res.status(200).json({
       ok: true,
-      data: parsed,
-      ...(webSearch ? { sources: sources.slice(0, 30) } : {})
+
+      data:
+        parsed || {
+          text: modelText
+        },
+
+      sources
     });
-  } catch (err) {
-    console.error('CareerMitra AI proxy error:', err);
-    return res.status(500).json({
+
+
+  } catch (error) {
+
+    return res.status(502).json({
       ok: false,
-      error: err?.message || 'AI service error.'
+
+      error:
+        error?.message ||
+        "Unknown server error"
     });
   }
 }
