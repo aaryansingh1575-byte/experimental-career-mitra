@@ -110,6 +110,25 @@ details.role .in{padding:0 16px 16px}
 .pill.y{background:var(--okbg);color:var(--ok)}.pill.n{background:var(--line);color:var(--muted)}.pill.w{background:var(--warnbg);color:var(--warn)}
 details.j>summary{cursor:pointer;font-weight:700;list-style:none}
 details.j>summary::-webkit-details-marker{display:none}
+/* ================= intro / welcome page ================= */
+.intro-page{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:38px 22px 48px;position:relative;overflow:hidden;background:#07090e}
+.intro-page:before{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(circle at 18% 18%,rgba(124,114,255,.16),transparent 30%),radial-gradient(circle at 82% 12%,rgba(167,139,250,.12),transparent 27%),radial-gradient(circle at 55% 92%,rgba(99,102,241,.09),transparent 34%)}
+.intro-page:after{content:"";position:absolute;inset:0;pointer-events:none;opacity:.18;background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);background-size:42px 42px;mask-image:linear-gradient(to bottom,black 0%,transparent 90%)}
+.intro-shell{width:min(1180px,100%);position:relative;overflow:hidden;border:1px solid rgba(167,139,250,.24);border-radius:32px;background:linear-gradient(145deg,rgba(15,18,27,.98),rgba(7,10,16,.99));padding:42px 46px 38px;box-shadow:0 32px 100px rgba(0,0,0,.62),0 0 100px rgba(124,114,255,.08);isolation:isolate}
+.intro-shell:before{content:"";position:absolute;inset:1px;border-radius:31px;border:1px solid rgba(255,255,255,.035);pointer-events:none}.intro-shell>*{position:relative;z-index:1}
+.intro-glow{position:absolute!important;width:440px;height:440px;border-radius:50%;background:rgba(124,114,255,.13);filter:blur(85px);right:-170px;top:-190px;pointer-events:none;animation:introPulse 6s ease-in-out infinite}@keyframes introPulse{0%,100%{transform:scale(1);opacity:.65}50%{transform:scale(1.12);opacity:1}}
+.intro-top{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:34px}.intro-brand{display:inline-flex;align-items:center;gap:11px;color:#f2f3f8;font-weight:900;font-size:24px;letter-spacing:-.7px}.intro-brand span:last-child{text-shadow:0 0 26px rgba(167,139,250,.18)}
+.intro-mark{width:46px;height:46px;border-radius:14px;display:grid;place-items:center;background:linear-gradient(135deg,#7167ff,#b59cff);color:#fff;font-weight:950;box-shadow:0 12px 38px rgba(124,114,255,.38),inset 0 1px 0 rgba(255,255,255,.35);animation:introLogo 3.2s ease-in-out infinite}@keyframes introLogo{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
+.intro-badge{border:1px solid rgba(167,139,250,.22);background:rgba(124,114,255,.07);padding:8px 12px;border-radius:999px;color:#aeb5c9;font-size:11px;font-weight:750;letter-spacing:.4px}
+.intro-hero{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(300px,.75fr);gap:42px;align-items:center}.intro-kicker{display:inline-flex;align-items:center;gap:8px;margin:0 0 14px;color:#b8a8ff;font-size:12px;font-weight:850;letter-spacing:1.2px;text-transform:uppercase}.intro-kicker:before{content:"";width:24px;height:2px;border-radius:2px;background:#9b8cff;box-shadow:0 0 12px #9b8cff}
+.intro-title{max-width:780px;color:#fff;font-size:clamp(43px,5.5vw,70px);line-height:1.01;letter-spacing:-3.2px;margin:0 0 20px}.intro-title span{display:block;background:linear-gradient(90deg,#d8d0ff,#9d91ff 45%,#c8baff 75%,#fff);background-size:220% auto;-webkit-background-clip:text;background-clip:text;color:transparent;animation:introGradient 5s linear infinite}@keyframes introGradient{to{background-position:220% center}}
+.intro-copy{max-width:760px;color:#a9b1c3;font-size:16px;line-height:1.72;margin:0 0 25px}.intro-actions{display:flex;align-items:center;gap:13px;flex-wrap:wrap}.intro-cta{padding:15px 25px!important;border-radius:13px!important;font-size:15px!important;font-weight:900!important;background:linear-gradient(135deg,#8176ff,#aa9bff)!important;border:1px solid rgba(255,255,255,.2)!important;box-shadow:0 15px 38px rgba(124,114,255,.28),0 0 30px rgba(124,114,255,.08);transition:.2s ease;animation:ctaGlow 3s ease-in-out infinite}.intro-cta:hover{transform:translateY(-3px);box-shadow:0 22px 52px rgba(124,114,255,.42),0 0 36px rgba(167,139,250,.18)}@keyframes ctaGlow{50%{box-shadow:0 20px 50px rgba(124,114,255,.4),0 0 0 7px rgba(167,139,250,.04)}}.intro-sub{color:#727d92;font-size:11px}
+.intro-visual{position:relative;min-height:285px;border:1px solid rgba(167,139,250,.18);border-radius:24px;background:linear-gradient(145deg,rgba(23,27,40,.92),rgba(10,13,21,.92));padding:20px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 20px 45px rgba(0,0,0,.25)}.intro-visual:after{content:"";position:absolute;width:150px;height:150px;border-radius:50%;background:rgba(139,133,255,.12);filter:blur(40px);right:-50px;bottom:-40px}.visual-title{color:#eef0f7;font-size:12px;font-weight:850;margin-bottom:14px}.visual-card{border:1px solid #2b3040;border-radius:14px;background:rgba(10,13,20,.86);padding:13px;margin-top:9px}.visual-card b{font-size:12px;color:#f0f2f8}.visual-card span{display:block;color:#7f899d;font-size:11px;margin-top:4px}.visual-score{display:flex;align-items:center;justify-content:space-between;margin-top:15px;padding-top:14px;border-top:1px solid #272c3b}.visual-score strong{font-size:25px;color:#b9afff}.visual-score small{color:#7f899d}
+.intro-section{margin-top:36px}.intro-section-title{display:flex;align-items:end;justify-content:space-between;gap:15px;margin-bottom:13px}.intro-section-title h2{color:#fff;font-size:19px;margin:0}.intro-section-title p{color:#737d91;font-size:11px;margin:0}.intro-features{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.intro-feature{border:1px solid #272d3c;border-radius:17px;background:linear-gradient(145deg,#121620,#0c1018);padding:18px;box-shadow:inset 0 1px 0 rgba(255,255,255,.035);transition:.2s ease}.intro-feature:hover{transform:translateY(-4px);border-color:rgba(167,139,250,.42);box-shadow:0 16px 34px rgba(0,0,0,.28),0 0 28px rgba(139,133,255,.08)}.intro-feature .fi{width:38px;height:38px;display:grid;place-items:center;border-radius:11px;background:rgba(139,133,255,.1);border:1px solid rgba(167,139,250,.15);font-size:19px;margin-bottom:12px}.intro-feature h3{color:#eef1f8;margin:0 0 5px;font-size:14px}.intro-feature p{color:#8b95aa;font-size:12px;margin:0;line-height:1.55}
+.intro-flow{margin-top:30px;border-top:1px solid #252b39;padding-top:24px}.intro-steps{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.intro-step{border:1px solid #272d3d;border-radius:14px;padding:15px;background:linear-gradient(145deg,#11151e,#0c1017);transition:.2s ease}.intro-step:hover{transform:translateY(-3px);border-color:rgba(167,139,250,.35)}.intro-step b{display:block;color:#f0f2f8;font-size:12px}.intro-step span{display:block;color:#7f899f;font-size:11px;margin-top:4px;line-height:1.45}.intro-num{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:8px;background:#242941;color:#a99cff;font-size:10px;font-weight:900;margin-bottom:9px}.intro-bottom{text-align:center;margin-top:28px;padding-top:22px;border-top:1px solid #252b39}.intro-bottom-label{color:#858fa4;font-size:12px;margin-bottom:9px}.intro-bottom-label b{color:#d7d1ff}.intro-bottom .intro-cta{min-width:220px}
+@media(max-width:900px){.intro-shell{padding:34px 28px}.intro-hero{grid-template-columns:1fr}.intro-visual{min-height:auto}.intro-features{grid-template-columns:1fr}.intro-steps{grid-template-columns:1fr 1fr}}
+@media(max-width:620px){.intro-page{padding:18px 12px}.intro-shell{padding:25px 18px;border-radius:23px}.intro-top{margin-bottom:27px}.intro-badge{display:none}.intro-title{font-size:42px;letter-spacing:-2px}.intro-copy{font-size:14px}.intro-steps{grid-template-columns:1fr}.intro-bottom .intro-cta{width:100%}}
+
 </style>
 </head>
 <body>
@@ -130,7 +149,7 @@ const KEY='careermitra_v1',SKEY='careermitra_session_v1',EKEY='careermitra_last_
 let mem=null;
 function loadDB(){try{const s=localStorage.getItem(KEY);if(s)return JSON.parse(s)}catch(e){}return mem||{users:[],students:{},families:{}}}
 let DB=loadDB();
-function save(){mem=DB;try{localStorage.setItem(KEY,JSON.stringify(DB))}catch(e){toast('Could not save — storage may be full. Try a smaller proof file.')}}
+function save(){if(typeof S!=='undefined'&&S.demo)return;mem=DB;try{localStorage.setItem(KEY,JSON.stringify(DB))}catch(e){toast('Could not save — storage may be full. Try a smaller proof file.')}}
 function getSess(){try{return sessionStorage.getItem(SKEY)||localStorage.getItem(SKEY)}catch(e){return null}}
 function setSess(id,remember){try{sessionStorage.removeItem(SKEY);localStorage.removeItem(SKEY);if(id){(remember===false?sessionStorage:localStorage).setItem(SKEY,id)}}catch(e){}}
 function lastEmail(){try{return localStorage.getItem(EKEY)||''}catch(e){return''}}
@@ -668,9 +687,37 @@ const studentByCode=c=>Object.entries(DB.students).find(([id,s])=>s.linkCode===c
 const firstName=n=>String(n||'').trim().split(/\s+/)[0]||'there';
 
 /* ================= state ================= */
-const S={view:'landing',mode:'login',authRole:null,uid:null,tab:'profile',tq:null,tstate:'idle',busy:false,rating:7,score:null,fq:null,pstage:null,pdraft:null,vd:null,welcome:null};
+const S={view:'intro',mode:'login',authRole:null,uid:null,tab:'profile',tq:null,tstate:'idle',busy:false,rating:7,score:null,fq:null,pstage:null,pdraft:null,vd:null,welcome:null,demo:false};
 const stu=()=>DB.students[S.uid],fam=()=>DB.families[S.uid];
 const curUser=()=>DB.users.find(x=>x.id===S.uid);
+
+/* ================= presentation demo data =================
+   Demo mode is in-memory only. It never overwrites a real user's saved data.
+*/
+const DEMO_STUDENT_ID='__cm_demo_student__', DEMO_FAMILY_ID='__cm_demo_family__', DEMO_LINK='CM-DEMO01';
+const demoUser=(id,role,email)=>({id,role,email,salt:'demo',hash:'demo',lastLogin:Date.now(),prevLogin:null,demo:true});
+const DEMO_STUDENT={
+ stage:'ug',linkCode:DEMO_LINK,
+ profile:{fullName:'Aarav Sharma',dob:'2005-08-17',gender:'Male',languages:'Hindi, English',phone:'9876543210',altPhone:'',address:'24 Green Park, Vijay Nagar',city:'Indore',state:'Madhya Pradesh',pin:'452010',degree:'B.Tech / B.E.',specialization:'Computer Science & Engineering',college:'Central Institute of Technology',university:'State Technical University',yearStudy:'3rd year',cgpa:'8.7',backlogs:'None',gradYear:'2027',skills:'Python, C++, Machine Learning, Git',projects:'Smart classroom analytics dashboard; computer vision attendance prototype',internships:'Summer internship in Python and data analytics',certifications:'NPTEL Python; Google Data Analytics basics',achievements:'SIH finalist; college coding club coordinator',linkedin:'https://www.linkedin.com/in/aarav-demo',github:'https://github.com/aarav-demo'},
+ vault:{interests:['Artificial Intelligence','Computer Vision','Robotics','Space & Aerospace'],hobbies:['Chess','Photography','Gaming'],likings:['Solving puzzles','Building things','Analysing data','Learning new tools'],subjects:[{name:'Mathematics',level:5},{name:'Computer Science',level:5},{name:'Physics',level:4}],roles:[{name:'Data Scientist / ML Engineer',sector:'Research / academia'},{name:'Software Engineer',sector:'Private company'},{name:'Embedded / Robotics Engineer',sector:'Startup'}],nonnegotiable:'Data Scientist / ML Engineer',alternatives:['Software Engineering','Robotics','AI Research'],field:'Artificial Intelligence & Machine Learning',whyField:'I enjoy solving difficult problems with data, maths and code, and I want to build systems that are useful in the real world.',whyNotOthers:'I explored pure management and design, but I prefer technical problem solving and building systems over mainly business or visual work.',skills:[{name:'Python',level:'Advanced',issuer:'NPTEL',proofName:'python-demo.pdf',proofData:''},{name:'Machine Learning',level:'Intermediate',issuer:'Coursera',proofName:'ml-demo.pdf',proofData:''}],saved:{interests:true,hobbies:true,likings:true,subjects:true,roles:true,nonnegotiable:true,field:true},rev:7},
+ test:{tally:{R:5,I:10,A:1,S:2,E:1,C:5},reasoning:7,takenAt:Date.now(),aiSource:'demo',rev:7,ai:{summary:'You are a curious, analytical learner who enjoys understanding how things work and turning ideas into working systems. You are strongest when a problem needs logic, experimentation and independent thinking.',coreInterests:['Artificial Intelligence','Machine Learning','Computer Vision','Robotics','Problem solving'],traits:['Analytical','Curious','Logical','Independent','Persistent','Practical'],careerInclination:'You lean towards technical careers that combine research, coding and real-world problem solving. AI/ML, software and robotics are natural directions for your current profile.'}},
+ progress:{score:true,options:true},updated:Date.now()
+};
+const DEMO_FAMILY={
+ profile:{fullName:'Rajesh Sharma',relation:'Father',gender:'Male',languages:'Hindi, English',phone:'9123456789',altPhone:'',address:'24 Green Park, Vijay Nagar',city:'Indore',state:'Madhya Pradesh',pin:'452010',education:'Graduate',sector:'Private job',designation:'Operations Manager',expYears:'20+ years',income:'₹12–25 lakh',skills:'Planning, communication, budgeting',experience:'20 years in operations and team management',linkCode:DEMO_LINK},
+ progress:{kid:true},status:'unsatisfied',rating:7,questions:['What do you personally want your child to become, and which stream or field do you prefer for them? Please explain why.','Why do you prefer your choice over the roles suggested here? Be specific.','What exactly worries or tensions you about your child’s chosen interest or career path?','Do you have any financial concerns, such as education cost, loans or the earning potential of this role? Please explain.','How do you feel about the starting salary and long-term income of the suggested roles?','What is your biggest concern about the future scope of this career?','Do you worry about job security or competition in this field? Explain.','Would you prefer your child to choose a more traditional career? Why?','Are you comfortable with the education and training required for this path?','Does the career require your child to move away from home? Is that a concern?','What skills do you think your child must improve before entering this field?','What would make you feel more confident about supporting this career?','How important is a stable income to your family when choosing a career?','Would you support this choice if the first job salary is lower than expected?','What information would you like to see before making the final decision?','How do you compare this career with software engineering?','How do you compare this career with government or PSU jobs?','Would higher education or a postgraduate degree be a concern for your family?','What role should the family play in the final career decision?','What is one positive thing you see in your child’s current interest?','What is one risk you think the student should understand clearly?','Would internships and projects make you more comfortable with the career?','How important are location and work-life balance to your family?','What salary or growth information would reassure you?','In one sentence, what would you need to see before saying “yes” confidently?'],qa:[],updated:Date.now()};
+const DEMO_ANSWERS=['I want a stable and respected technical career, but I also want my child to choose something they can genuinely enjoy.','I compare it with software jobs because I want to understand the practical difference in growth and stability.','My main worry is whether the field will remain strong when the student graduates and whether competition will be too high.','Education cost matters, so I want a clear picture of fees, skills and realistic earning potential.','I am comfortable with good long-term income, even if the starting package is moderate.','I want evidence that AI and data roles will continue to have useful opportunities.','Yes, competition is a concern, so the student should build strong projects and skills.','I prefer familiar careers sometimes, but I am open if the technical path is well planned.','The education path is acceptable if we know the expected degree, skills and costs.','Relocation is possible, but nearby or remote opportunities would make the transition easier.','The student should improve communication, system building and practical project skills.','A clear learning roadmap, internships and evidence of demand would increase my confidence.','Stable income is important, but it is not the only factor in the decision.','Yes, I would support the choice if there is a sensible growth path and skill plan.','I want current market demand, education requirements, realistic pay and alternatives.','Software engineering looks strong, but I want to know where AI and ML add value beyond general coding.','Government jobs offer stability, but they have different selection paths and work environments.','A postgraduate degree is acceptable if it is genuinely useful for the chosen role.','The family should advise and ask questions, while the student should remain central to the final decision.','I like that my child enjoys difficult technical problems and keeps learning independently.','The main risk is entering the field without enough practical experience or strong fundamentals.','Yes, internships and projects would make the career choice more concrete and credible.','Location and work-life balance matter, but career fit comes first.','Clear salary ranges, demand evidence and a step-by-step pathway would reassure me.','I would say yes when the student has a realistic roadmap, strong skills and a clear understanding of the market.'];
+DEMO_FAMILY.qa=DEMO_FAMILY.questions.map((q,i)=>({q,a:DEMO_ANSWERS[i],accepted:true,note:''}));
+function installDemoData(){
+ if(!DB.users.some(u=>u.id===DEMO_STUDENT_ID))DB.users.push(demoUser(DEMO_STUDENT_ID,'student','demo.student@careermitra.local'));
+ if(!DB.users.some(u=>u.id===DEMO_FAMILY_ID))DB.users.push(demoUser(DEMO_FAMILY_ID,'family','demo.family@careermitra.local'));
+ DB.students[DEMO_STUDENT_ID]=DEMO_STUDENT;DB.families[DEMO_FAMILY_ID]=DEMO_FAMILY;
+}
+function enterDemo(role){
+ installDemoData();S.demo=true;S.authRole=role;S.mode='login';S.score=null;S.uid=role==='student'?DEMO_STUDENT_ID:DEMO_FAMILY_ID;S.vd=null;S.pdraft=null;S.pstage=null;S.tstate='idle';S.tq=null;S.fq=null;S.rating=DEMO_FAMILY.rating;S.welcome=null;
+ if(role==='score'){S.score=DEMO_STUDENT_ID;S.view='score'}else{S.tab='profile';S.view=role}render();
+}
+
 function ensure(){const s=DB.students[S.uid];if(s&&!s.progress)s.progress={};const f=DB.families[S.uid];if(f){if(!f.progress)f.progress={};if(!f.qa)f.qa=[]}}
 function enterSession(u,welcome){
   S.uid=u.id;S.vd=null;S.pdraft=null;S.pstage=null;S.tstate='idle';S.tq=null;ensure();
@@ -706,7 +753,7 @@ const nextBar=(title,sub,act,label,data)=>`<div class="card next"><div><b>${titl
 /* ================= shared view pieces ================= */
 function header(role){
   const u=curUser();
-  return`<div class="top"><div class="logo" data-act="home">Career<b>Mitra</b></div><div class="row">${role?`<span class="badge">${role}</span><button class="btn ghost sm" data-act="logout">Log out</button>`:''}</div></div>`;
+  return`<div class="top"><div class="logo" data-act="home">Career<b>Mitra</b></div><div class="row">${role?`${S.demo?'<span class="badge">DEMO MODE</span>':''}<span class="badge">${role}</span><button class="btn ghost sm" data-act="${S.demo?'exitdemo':'logout'}">${S.demo?'Exit demo':'Log out'}</button>`:''}</div></div>`;
 }
 function welcomeBanner(){
   if(!S.welcome)return'';
@@ -718,14 +765,68 @@ function dataCard(){
   return`<div class="card"><h3 style="margin-top:0">Your saved data</h3><p class="muted small">Everything you enter is saved under your email and loads automatically when you log in again on this browser. To use CareerMitra on another device, download a backup here and restore it from the login screen.</p>
   <div class="row"><button class="btn ghost sm" data-act="backup">⬇ Download backup</button><label class="btn ghost sm" style="cursor:pointer">⬆ Restore backup<input type="file" accept="application/json,.json" data-restore style="display:none"></label></div></div>`;
 }
+function intro(){
+  return `<div class="intro-page">
+   <div class="intro-shell">
+    <div class="intro-glow"></div>
+    <div class="intro-top">
+      <div class="intro-brand"><span class="intro-mark">CM</span><span>CareerMitra</span></div>
+      <div class="intro-badge">AI-ENABLED • STUDENT + FAMILY • CAREER DECISION SUPPORT</div>
+    </div>
+
+    <div class="intro-hero">
+      <div>
+        <div class="intro-kicker">A clearer way to choose a career</div>
+        <h1 class="intro-title">Your career. Your family.<span>One clearer decision.</span></h1>
+        <p class="intro-copy">CareerMitra brings the student’s interests, personality, skills and career choices together with the family’s questions, concerns and expectations — so the final decision is based on the complete picture, not just a test score.</p>
+        <div class="intro-actions">
+          <span class="intro-sub">Profile → Vault → AI Test → Family → Scorecard</span>
+        </div>
+      </div>
+
+      <div class="intro-visual">
+        <div class="visual-title">What makes CareerMitra different?</div>
+        <div class="visual-card"><b>🎓 Student perspective</b><span>Interests • skills • personality • preferred roles</span></div>
+        <div class="visual-card"><b>👨‍👩‍👧 Family perspective</b><span>Concerns • expectations • stability • affordability</span></div>
+        <div class="visual-card"><b>🤝 Common ground</b><span>Suitable career directions that respect both sides</span></div>
+        <div class="visual-score"><strong>360°</strong><small>connected career view</small></div>
+      </div>
+    </div>
+
+    <div class="intro-section">
+      <div class="intro-section-title"><h2>Why CareerMitra?</h2><p>Built around the real career decision journey</p></div>
+      <div class="intro-features">
+        <div class="intro-feature"><div class="fi">🎯</div><h3>More than a career quiz</h3><p>Personal Vault information guides the Test Zone instead of treating every student the same.</p></div>
+        <div class="intro-feature"><div class="fi">👨‍👩‍👧</div><h3>Student + family together</h3><p>Family concerns become part of the discussion without replacing the student’s own choice.</p></div>
+        <div class="intro-feature"><div class="fi">📊</div><h3>One connected scorecard</h3><p>Student analysis, family perspective and common-ground career directions meet in one place.</p></div>
+      </div>
+    </div>
+
+    <div class="intro-flow">
+      <div class="intro-section-title"><h2>How it works</h2><p>Four simple stages</p></div>
+      <div class="intro-steps">
+       <div class="intro-step"><div class="intro-num">01</div><b>Student Profile</b><span>Understand the student and their current stage.</span></div>
+       <div class="intro-step"><div class="intro-num">02</div><b>Personal Vault + AI Test</b><span>Capture interests, roles, skills and personality signals.</span></div>
+       <div class="intro-step"><div class="intro-num">03</div><b>Family Perspective</b><span>Connect the family and understand their concerns.</span></div>
+       <div class="intro-step"><div class="intro-num">04</div><b>Scorecard &amp; Analysis</b><span>See the student, family and common-ground picture.</span></div>
+      </div>
+    </div>
+
+    <div class="intro-bottom">
+      <div class="intro-bottom-label"><b>Begin your career journey</b> — your complete journey starts here.</div>
+      <button class="btn intro-cta" data-act="platform">Enter CareerMitra&nbsp; →</button>
+    </div>
+   </div>
+  </div>`;
+}
 function landing(){
   const u=curUser();
   return header()+(u?`<div class="card next"><div><b>Welcome back${u.role==='student'?'':''}!</b><div class="muted small">You’re signed in as ${esc(u.email)} (${u.role}).</div></div><button class="btn" data-act="resume">Continue where I left off →</button></div>`:'')+
-  `<div class="card"><h1>Find the right career — together.</h1><p class="muted">CareerMitra guides a student step by step through profile, vault, test and analysis, and brings the family into the decision. Pick a panel to begin.</p></div>
+  `<div class="card"><h1>Find the right career — together.</h1><p class="muted">CareerMitra guides a student step by step through profile, vault, test and analysis, and brings the family into the decision. Pick a panel to begin.</p><div class="note info" style="margin-top:12px"><b>🎬 Judge demo available:</b> every panel has a prefilled sample journey. No signup or API call is required to explore the demo.</div></div>
   <div class="grid3">
-   <div class="card panel" data-act="enter" data-r="student"><div class="ico">🎓</div><h2>Student</h2><p class="muted">Create your profile, fill your Personal Vault, take the AI Test Zone and explore your options.</p><span class="btn sm">Continue as student →</span></div>
-   <div class="card panel" data-act="enter" data-r="family" style="border-top-color:var(--brand2)"><div class="ico">👨‍👩‍👧</div><h2>Family</h2><p class="muted">See your child’s interests and suitable roles, rate your satisfaction and share your concerns.</p><span class="btn sm">Continue as family →</span></div>
-   <div class="card panel" data-act="enter" data-r="score" style="border-top-color:var(--ok)"><div class="ico">📊</div><h2>Scorecard &amp; Analysis</h2><p class="muted">Opens once both student and family have finished. Log in with either account.</p><span class="btn sm">Open scorecard →</span></div>
+   <div class="card panel" data-act="enter" data-r="student"><div class="ico">🎓</div><h2>Student</h2><p class="muted">Create your profile, fill your Personal Vault, take the AI Test Zone and explore your options.</p><div class="row"><span class="btn sm">Continue as student →</span><button type="button" class="btn ghost sm" data-act="demo" data-r="student">▶ View demo</button></div></div>
+   <div class="card panel" data-act="enter" data-r="family" style="border-top-color:var(--brand2)"><div class="ico">👨‍👩‍👧</div><h2>Family</h2><p class="muted">See your child’s interests and suitable roles, rate your satisfaction and share your concerns.</p><div class="row"><span class="btn sm">Continue as family →</span><button type="button" class="btn ghost sm" data-act="demo" data-r="family">▶ View demo</button></div></div>
+   <div class="card panel" data-act="enter" data-r="score" style="border-top-color:var(--ok)"><div class="ico">📊</div><h2>Scorecard &amp; Analysis</h2><p class="muted">Opens once both student and family have finished. Log in with either account.</p><div class="row"><span class="btn sm">Open scorecard →</span><button type="button" class="btn ghost sm" data-act="demo" data-r="score">▶ View demo</button></div></div>
   </div>`;
 }
 function auth(){
@@ -743,7 +844,7 @@ function auth(){
     </div><div class="err" id="err"></div>
     <button class="btn" style="width:100%" ${S.busy?'disabled':''}>${isScore?'Open scorecard':reg?'Create account':'Log in'}</button>
    </form>
-   ${reg?'':`<p class="muted small" style="margin-top:14px">Returning? Log in with the same email and password — your saved profile, vault and results come back automatically. New device? <label style="color:var(--brand);cursor:pointer;text-decoration:underline">restore a backup<input type="file" accept="application/json,.json" data-restore style="display:none"></label> first.</p>`}</div>`;
+   ${reg?'':`<p class="muted small" style="margin-top:14px">Returning? Log in with the same email and password — your saved profile, vault and results come back automatically. New device? <label style="color:var(--brand);cursor:pointer;text-decoration:underline">restore a backup<input type="file" accept="application/json,.json" data-restore style="display:none"></label> first.</p>`}<div class="note info" style="margin-top:14px"><b>Judge demo:</b> <button type="button" class="btn ghost sm" data-act="demo" data-r="${r}">▶ Open prefilled demo</button></div></div>`;
 }
 
 /* ================= student: profile ================= */
@@ -976,7 +1077,13 @@ function scoreBlock(st){
    <h3>Core interests</h3>${interests.map(x=>`<span class="chip">${esc(x)}</span>`).join('')}
    <h3>Your traits</h3>${traits.map(x=>`<span class="chip">${esc(x)}</span>`).join('')}</div>
    <div class="card"><h3 style="margin-top:0">Personality profile spread</h3>${LET.map(k=>`<div class="trait"><span>${TR[k].who} · ${TR[k].n}</span><div class="bar"><i style="width:${Math.round(an.share[k]*100)}%"></i></div><span>${Math.round(an.share[k]*100)}%</span></div>`).join('')}<p class="muted small">Shows how your answers spread across six interest styles. It is a profile, not a score.</p></div>
-   <div class="card"><h2>Education & learning pathways</h2><p class="muted">For each analysed role: what to study, vocational alternatives, certifications and job-ready skills.</p>${paths.map(({r,p})=>`<details class="role"><summary><span>${esc(r.n)}</span><span class="fit ${r.rank<2?'s':r.rank<4?'g':'p'}">${r.rank<2?'Strong fit':r.rank<4?'Good fit':'Possible fit'}</span></summary><div class="in"><p><b>🎓 Academic:</b> ${esc(p.academic)}</p><p><b>🛠️ Vocational:</b> ${esc(p.vocational)}</p><p><b>📜 Certifications:</b> ${p.cert.map(esc).join(', ')}</p><p><b>💻 Job-ready skills:</b> ${p.skills.map(esc).join(', ')}</p></div></details>`).join('')}</div>`};
+   <div class="card"><h2>Education & learning pathways</h2><p class="muted">For each analysed role, this section now keeps the complete career picture together: fit, pros, cons, market/demand/pay, academic route, vocational alternatives, certifications, job-ready skills and alternatives.</p>${paths.map(({r,p})=>`<details class="role" ${r.rank===0?'open':''}><summary><span>${esc(r.n)}</span><span class="fit ${r.rank<2?'s':r.rank<4?'g':'p'}">${r.rank<2?'Strong fit':r.rank<4?'Good fit':'Possible fit'}</span></summary><div class="in">
+    ${r.strong.length||r.watch.length?`<div class="note info"><b>Why this role appears in your analysis</b><ul style="margin:4px 0 0;padding-left:18px">${r.strong.map(x=>`<li>${esc(x)}</li>`).join('')}${r.watch.map(x=>`<li>⚠ ${esc(x)}</li>`).join('')}</ul></div>`:''}
+    <div class="pc"><div class="pros"><h4>Pros</h4><ul>${r.pros.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div><div class="cons"><h4>Cons / trade-offs</h4><ul>${r.cons.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div></div>
+    <h3>Market, demand & pay</h3><p>${esc(r.mkt)}</p><p class="muted small" style="margin-top:-6px">Indicative information in India; actual pay and opportunities vary by employer, city, skills and experience.</p>
+    <h3>Education & pathway to enter this role</h3><p><b>🎓 Academic:</b> ${esc(p.academic)}</p><p><b>🛠️ Vocational / Diploma:</b> ${esc(p.vocational)}</p><p><b>📜 Useful certifications:</b> ${p.cert.map(esc).join(', ')}</p><p><b>💻 Job-ready skills:</b> ${p.skills.map(esc).join(', ')}</p>
+    <h3>Alternatives</h3>${r.alt.map(x=>`<span class="chip alt">${esc(x)}</span>`).join('')}
+   </div></details>`).join('')}</div>`};
 }
 function rolesBlock(an,withPersonal){
   const lab=r=>r.rank<2?['s','Strong fit']:r.rank<4?['g','Good fit']:['p','Possible fit'];
@@ -984,6 +1091,7 @@ function rolesBlock(an,withPersonal){
    ${withPersonal&&(r.strong.length||r.watch.length)?`<div class="note info"><b>From your Test Zone activity</b><ul style="margin:4px 0 0;padding-left:18px">${r.strong.map(x=>`<li>${esc(x)}</li>`).join('')}${r.watch.map(x=>`<li>⚠ ${esc(x)}</li>`).join('')}</ul></div>`:''}
    <div class="pc"><div class="pros"><h4>Pros</h4><ul>${r.pros.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div><div class="cons"><h4>Cons</h4><ul>${r.cons.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div></div>
    <h3>Market value</h3><p>${esc(r.mkt)}</p><p class="muted small" style="margin-top:-6px">Indicative ranges in India; they vary by employer, city and skills.</p>
+   <h3>Education & pathway to enter this role</h3><p><b>🎓 Academic:</b> ${esc(learningPath(r).academic)}</p><p><b>🛠️ Vocational / Diploma:</b> ${esc(learningPath(r).vocational)}</p><p><b>📜 Useful certifications:</b> ${learningPath(r).cert.map(esc).join(', ')}</p><p><b>💻 Job-ready skills:</b> ${learningPath(r).skills.map(esc).join(', ')}</p>
    <h3>Alternatives</h3>${r.alt.map(x=>`<span class="chip alt">${esc(x)}</span>`).join('')}</div></details>`}).join('')
    +(an.unmatched.length?`<p class="muted small">Not in our role database yet: ${an.unmatched.map(esc).join(', ')}.</p>`:'');
 }
@@ -1089,6 +1197,35 @@ function familyView(){
 }
 
 /* ================= panel 3 ================= */
+function familyIntersectionBlock(st,an,fams){
+  const acceptedConcerns=fams.flatMap(([id,f])=>arr(f.qa).filter(x=>x.accepted).map(x=>({q:String(x.q||''),a:String(x.a||'')})));
+  if(!acceptedConcerns.length)return '';
+  const text=acceptedConcerns.map(x=>`${x.q} ${x.a}`).join(' ').toLowerCase();
+  const studentRoles=an.roles||[], studentRank={};
+  studentRoles.forEach((r,i)=>studentRank[r.n]=Math.max(0,1-i/Math.max(1,studentRoles.length)));
+  const prefText=([roleNames(st.vault).join(' '),st.vault&&st.vault.nonnegotiable||'',st.vault&&st.vault.field||'',arr(st.vault&&st.vault.interests).join(' '),arr(st.vault&&st.vault.likings).join(' ')].join(' ')).toLowerCase();
+  const familyNeed=r=>{
+    const hay=(`${r.n} ${r.mkt} ${arr(r.pros).join(' ')} ${arr(r.cons).join(' ')} ${arr(r.alt).join(' ')}`).toLowerCase();
+    let score=0,matched=[]; const add=(cond,pts,label)=>{if(cond){score+=pts;if(label&&!matched.includes(label))matched.push(label)}};
+    if(/salary|income|earning|pay|financial|fees?|cost|loan|debt|afford/.test(text))add(/high|very high|premium|strong pay|₹\s*\d|pay scale/.test(hay)&&!(/uncertain|low|slow pay/.test(hay)),2,'income');
+    if(/stable|stability|security|secure|competition|competitive|future|scope|demand|growth|10 years/.test(text))add(/stable|high demand|very high demand|growing|security|shortage|strong demand/.test(hay),2,'future & stability');
+    if(/government|govt|psu|traditional/.test(text))add(/government|govt|public service|psu|7th cpc|security/.test(hay),1.8,'stability / government');
+    if(/respect|respected|society|relatives|traditional/.test(text))add(/respected|prestige|meaningful|mission|government|leadership/.test(hay),1.2,'respect');
+    if(/education|degree|postgraduate|postgrad|training|college|study/.test(text))add(!/needs strong|long study|postgrad|postgraduate|costly|high cost/.test(hay),1,'education fit');
+    if(/competition|competitive|crowded/.test(text))add(!/competitive|crowded|extremely competitive/.test(hay),1.3,'competition');
+    if(/move away|away from home|relocat|location|remote|work-life|work life/.test(text))add(/remote|varied postings|work-life|freelance|flexible/.test(hay),1,'location / lifestyle');
+    if(/internship|project|skills|fundamentals|portfolio/.test(text))add(/skill|portfolio|project|practical/.test(hay),.7,'skill-building path');
+    if(/software engineering|software engineer|general coding/.test(text))add(/software/.test(hay),1,'software overlap');
+    if(/ai|data|machine learning|ml|technical|math|coding|computer|robotics/.test(text))add(/data|machine learning|software|robot|computer|technical|ai|analytics/.test(hay),2,'student interest');
+    if(/health|doctor|medical|law|finance|accounting|teaching|design|business/.test(text))add((r.kw||[]).some(k=>text.includes(String(k).toLowerCase())),.8,'family preference');
+    return{score,matched};
+  };
+  const scored=CAREERS.map(c=>{const fs=familyNeed(c),ss=studentRank[c.n]||0,kwHits=c.kw.filter(k=>rx(k).test(prefText)).length,personality=(c.c||'').split('').reduce((sum,k)=>sum+(an.share[k]||0),0)/Math.max(1,(c.c||'').length),studentFit=(ss*4)+(Math.min(4,kwHits)*.65)+(personality*2),total=(studentFit*.45)+(fs.score*2.2*.55);return{c,fs,studentFit,total};}).sort((a,b)=>b.total-a.total);
+  const picks=scored.slice(0,3),max=scored[0]?.total||1;
+  return `<div class="card" style="border-width:2px;border-color:var(--brand)"><div class="row sp"><div><div class="muted small">Family + Student intersection</div><h2 style="margin:3px 0">🎯 Top 3 careers that bridge both sides</h2></div><span class="pill y">25 concerns + student profile</span></div><p class="muted small">These are ranked by how well a career fits the student’s interests/personality <b>and</b> addresses the family’s concerns about stability, income, education, competition, location and future scope.</p><div class="grid2">${picks.map((x,i)=>{const pct=Math.max(1,Math.round((x.total/max)*100)),studentPct=Math.min(99,Math.round((x.studentFit/Math.max(1,scored[0].studentFit))*100)),familyPct=Math.min(99,Math.round((x.fs.score/Math.max(1,scored[0].fs.score))*100));return `<div class="qa" style="margin:0"><div class="row sp"><b>${i+1}. ${esc(x.c.n)}</b><span class="fit s">${pct}% intersection</span></div><p class="small" style="margin:6px 0"><b>Why it fits the student:</b> ${esc(studentRoles.find(r=>r.n===x.c.n)?.strong?.[0]||'Matches the student’s profile and career interests.')}</p><p class="small" style="margin:6px 0"><b>Family concerns addressed:</b> ${esc(x.fs.matched.length?x.fs.matched.join(', '):'overall career fit, demand and pathway')}</p><div class="pc" style="margin-top:10px"><div class="pros"><h4>Pros</h4><ul>${x.c.pros.map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div><div class="cons"><h4>Cons / trade-offs</h4><ul>${x.c.cons.map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div></div><h4 style="margin:12px 0 4px">Market, demand & pay</h4><p class="small" style="margin:0">${esc(x.c.mkt)}</p><div class="note info small" style="margin-top:10px"><b>How to enter — Education:</b> 🎓 ${esc(learningPath(x.c).academic)}<br><b>Vocational / Diploma:</b> ${esc(learningPath(x.c).vocational)}<br><b>Certifications:</b> ${learningPath(x.c).cert.map(esc).join(', ')}<br><b>Job-ready skills:</b> ${learningPath(x.c).skills.map(esc).join(', ')}</div><div class="trait"><span>Student fit</span><div class="bar"><i style="width:${studentPct}%"></i></div><span>${studentPct}%</span></div><div class="trait"><span>Family fit</span><div class="bar"><i style="width:${familyPct}%"></i></div><span>${familyPct}%</span></div></div>`;}).join('')}</div><p class="muted small" style="margin-bottom:0">This is a decision-support shortlist, not a guarantee that every concern disappears. The family and student can compare these three paths together.</p></div>`;
+}
+
+
 function scoreView(){
   if(!S.score)return auth();
   const u=DB.users.find(x=>x.id===S.score);if(!u){S.score=null;return auth()}
@@ -1108,12 +1245,12 @@ function scoreView(){
   return bar+`<div class="card"><h2>${esc(s.profile.fullName)} — Scorecard &amp; Analysis</h2><p class="muted">${stg?stg.t+' · ':''}Combined view of the student’s Test Zone result and the family’s perspective.</p></div>`+staleNote(s)+html+anchorCareerBlock(s,an)+
    `<div class="card"><h2>Suitable careers</h2><p class="muted small">Open each role for alternatives, pros, cons and market value.</p></div>`+rolesBlock(an,false)+
    `<div class="card"><h2>Family perspective</h2>${fOk.map(([id,f])=>`<div class="qa"><div class="row sp"><b>${esc(f.profile.fullName)} <span class="muted small">(${esc(f.profile.relation)})</span></b><span class="fit ${f.status==='supportive'?'s':'p'}">${f.status==='supportive'?'Supportive':'Unsatisfied'} · ${f.rating}/10</span></div>
-     ${f.status==='supportive'?'<p class="muted">The family supports the suggested career directions.</p>':f.qa.filter(x=>x.accepted).map(x=>`<div class="qa"><b>${esc(x.q)}</b><p style="margin:4px 0">“${esc(x.a)}”</p><div class="note info small">${esc(concernNote(x.a,an))}</div></div>`).join('')}</div>`).join('')}</div>`;
+     ${f.status==='supportive'?'<p class="muted">The family supports the suggested career directions.</p>':f.qa.filter(x=>x.accepted).map(x=>`<div class="qa"><b>${esc(x.q)}</b><p style="margin:4px 0">“${esc(x.a)}”</p><div class="note info small">${esc(concernNote(x.a,an))}</div></div>`).join('')}</div>`).join('')}</div>`+familyIntersectionBlock(s,an,fOk);
 }
 
 /* ================= router ================= */
 function render(keep){
-  const v={landing,auth,student:studentView,family:familyView,score:scoreView}[S.view]||landing;
+  const v={intro,landing,platform:landing,auth,student:studentView,family:familyView,score:scoreView}[S.view]||intro;
   $('#app').innerHTML=v();if(!keep)window.scrollTo(0,0);
 }
 function go(view){S.view=view;render()}
@@ -1185,16 +1322,19 @@ document.addEventListener('click',async e=>{
   const el=e.target.closest('[data-act]');if(!el)return;const a=el.dataset.act;
   if(el.tagName==='A'&&el.getAttribute('href')==='#')e.preventDefault();
   const D=el.dataset;
-  if(a==='home'){S.score=null;go('landing')}
-  else if(a==='resume'){const u=curUser();if(u){enterSession(u,false);render()}}
-  else if(a==='enter'){
+  if(a==='home'){S.score=null;S.demo=false;S.uid=null;S.vd=null;S.welcome=null;go('intro')}
+  else if(a==='platform'){S.demo=false;S.score=null;S.welcome=null;S.uid=null;S.vd=null;S.view='landing';render()}
+  else if(a==='demo'){enterDemo(D.r)}
+  else if(a==='exitdemo'){S.demo=false;S.score=null;S.uid=null;S.vd=null;S.welcome=null;S.tstate='idle';S.tq=null;go('landing')}
+  else if(a==='resume'){const u=curUser();if(u){S.demo=false;enterSession(u,false);render()}}
+  else if(a==='enter'){S.demo=false;
     S.authRole=D.r;S.mode='login';
     if(D.out){S.score=null;S.view='auth';render();return}
     if(S.authRole!=='score'&&S.uid){const u=curUser();if(u&&u.role===S.authRole){enterSession(u,false);render();return}}
     S.view='auth';render();
   }
   else if(a==='mode'){S.mode=D.m;render()}
-  else if(a==='logout'){setSess(null);S.uid=null;S.score=null;S.vd=null;S.welcome=null;S.tstate='idle';S.tq=null;go('landing');toast('Logged out. Your data is saved — log in with the same email and password to continue.')}
+  else if(a==='logout'){setSess(null);S.demo=false;S.uid=null;S.score=null;S.vd=null;S.welcome=null;S.tstate='idle';S.tq=null;go('landing');toast('Logged out. Your data is saved — log in with the same email and password to continue.')}
   else if(a==='dismiss'){S.welcome=null;render(true)}
   else if(a==='tab'){S.tab=D.t;render()}
   else if(a==='stage'){
