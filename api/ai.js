@@ -1,141 +1,169 @@
 export const maxDuration = 10;
 
-function cleanText(value, max = 12000) {
-  return String(value ?? "")
-    .replace(/\u0000/g, "")
-    .trim()
-    .slice(0, max);
-}
+const cleanText = (v, max = 12000) =>
+  String(v ?? "")
+    .replace(/\0/g, "")
+    .slice(0, max)
+    .trim();
 
-function extractCareer(text = "") {
-  const m = text.match(
-    /(?:career|role|job|profession)\s*[:\-]\s*([^\n,.;]+)/i
-  );
-
+function extractCareer(body = {}) {
   return cleanText(
-    m?.[1] || text.split("\n")[0] || "Career",
-    160
-  );
+    body.career ||
+      body.careerName ||
+      body.role ||
+      body.anchorCareer ||
+      body.query ||
+      "career"
+  , 300);
 }
 
-function isBadResult(value) {
-  if (!value) return true;
+function isBadResult(data) {
+  if (!data) return true;
 
-  const text =
-    typeof value === "string"
-      ? value
-      : JSON.stringify(value);
+  const text = typeof data === "string"
+    ? data
+    : JSON.stringify(data);
 
-  return /I can't|I cannot|unable to|error|not available/i.test(text);
+  return (
+    text.length < 40 ||
+    /unable to|cannot provide|error|failed to search/i.test(text)
+  );
 }
 
 async function searchWeb(query) {
-  try {
-    const q = encodeURIComponent(
-      cleanText(query, 500)
-    );
+  const q = encodeURIComponent(cleanText(query, 500));
 
+  try {
     const response = await fetch(
-      `https://www.bing.com/search?format=rss&q=${q}`,
+      `https://www.google.com/search?q=${q}`,
       {
         headers: {
-          "User-Agent": "Mozilla/5.0"
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36"
         }
       }
     );
 
     if (!response.ok) return [];
 
-    const xml = await response.text();
+    const html = await response.text();
 
-    const items = [
-      ...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)
-    ];
+    const results = [];
+    const regex =
+      /<a href="(https?:\/\/[^"]+)"[^>]*>(.*?)<\/a>/gi;
 
-    return items
-      .slice(0, 8)
-      .map((item) => {
-        const block = item[1];
+    let match;
 
-        const title =
-          block
-            .match(/<title>([\s\S]*?)<\/title>/i)?.[1]
-            ?.replace(/<!\[CDATA\[|\]\]>/g, "")
-            ?.trim() || "";
+    while ((match = regex.exec(html)) && results.length < 8) {
+      const url = match[1];
 
-        const link =
-          block
-            .match(/<link>([\s\S]*?)<\/link>/i)?.[1]
-            ?.trim() || "";
+      if (
+        url.includes("google.com") ||
+        url.includes("accounts.google") ||
+        url.includes("support.google")
+      ) {
+        continue;
+      }
 
-        const description =
-          block
-            .match(
-              /<description>([\s\S]*?)<\/description>/i
-            )?.[1]
-            ?.replace(/<!\[CDATA\[|\]\]>/g, "")
-            ?.replace(/<[^>]+>/g, "")
-            ?.trim() || "";
+      const title = match[2]
+        .replace(/<[^>]+>/g, "")
+        .replace(/&amp;/g, "&")
+        .replace(/&#39;/g, "'")
+        .replace(/&quot;/g, '"')
+        .trim();
 
-        return {
-          title: cleanText(title, 300),
-          url: cleanText(link, 1000),
-          description: cleanText(description, 700)
-        };
-      })
-      .filter((x) => x.title && x.url);
+      if (title && url) {
+        results.push({
+          title,
+          url
+        });
+      }
+    }
+
+    return results;
   } catch {
     return [];
   }
 }
 
-function sourcePriority(source) {
-  const url = source?.url || "";
+function sourcePriority(url = "") {
+  const u = url.toLowerCase();
 
-  if (/gov\.in|nic\.in/i.test(url)) return 5;
-  if (/ncs\.gov\.in|education\.gov\.in/i.test(url)) return 5;
   if (
-    /linkedin\.com|indeed\.com|glassdoor/i.test(url)
-  ) return 4;
-  if (/coursera|udemy|edx/i.test(url)) return 3;
+    u.includes(".gov.in") ||
+    u.includes("gov.in") ||
+    u.includes("ncs.gov.in")
+  ) return 10;
 
-  return 1;
+  if (
+    u.includes("ugc.gov.in") ||
+    u.includes("aicte-india.org") ||
+    u.includes("education.gov.in")
+  ) return 9;
+
+  if (
+    u.includes("linkedin.com") ||
+    u.includes("indeed.com")
+  ) return 6;
+
+  if (
+    u.includes("ambitionbox.com") ||
+    u.includes("glassdoor.co")
+  ) return 5;
+
+  return 3;
 }
 
 function extractModelText(data) {
-  return (
-    data?.choices?.[0]?.message?.content ||
-    data?.choices?.[0]?.text ||
-    ""
-  );
+  if (!data) return "";
+
+  if (typeof data === "string") return data;
+
+  if (data.choices?.[0]?.message?.content) {
+    return data.choices[0].message.content;
+  }
+
+  if (data.choices?.[0]?.text) {
+    return data.choices[0].text;
+  }
+
+  return "";
 }
 
 function parseJSON(text) {
   if (!text) return null;
 
+  let cleaned = text
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
+
   try {
-    return JSON.parse(text);
+    return JSON.parse(cleaned);
   } catch {}
 
-  const match = text.match(/\{[\s\S]*\}/);
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
 
-  if (!match) return null;
-
-  try {
-    return JSON.parse(match[0]);
-  } catch {
-    return null;
+  if (start !== -1 && end > start) {
+    try {
+      return JSON.parse(cleaned.slice(start, end + 1));
+    } catch {}
   }
+
+  return null;
 }
 
 async function callAI(prompt) {
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const key = process.env.OPENROUTER_API_KEY;
 
-  if (!apiKey) {
-    throw new Error(
-      "OPENROUTER_API_KEY is missing"
-    );
+  if (!key) {
+    throw new Error("OPENROUTER_API_KEY is not configured");
   }
+
+  const model =
+    process.env.OPENROUTER_MODEL ||
+    "nvidia/nemotron-3-ultra-550b-a55b:free";
 
   const response = await fetch(
     "https://openrouter.ai/api/v1/chat/completions",
@@ -143,22 +171,20 @@ async function callAI(prompt) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${key}`,
         "HTTP-Referer":
-          "https://careermitra.vercel.app",
+          process.env.APP_URL || "https://careermitra.vercel.app",
         "X-Title": "CareerMitra"
       },
       body: JSON.stringify({
-        model:
-          "nvidia/nemotron-3-ultra-550b-a55b:free",
-
+        model,
         temperature: 0.2,
-
+        max_tokens: 5000,
         messages: [
           {
             role: "system",
             content:
-              "You are CareerMitra, an AI career counselling and family decision-support assistant. Give practical, structured and India-relevant career guidance. Never silently replace a student's non-negotiable career."
+              "You are CareerMitra, an AI career counselling and family decision-support assistant. Give practical, balanced, India-relevant career information. Never silently replace a student's explicitly chosen non-negotiable career."
           },
           {
             role: "user",
@@ -171,12 +197,8 @@ async function callAI(prompt) {
 
   if (!response.ok) {
     const errorText = await response.text();
-
     throw new Error(
-      `OpenRouter error ${response.status}: ${errorText.slice(
-        0,
-        500
-      )}`
+      `OpenRouter error ${response.status}: ${errorText.slice(0, 500)}`
     );
   }
 
@@ -194,41 +216,24 @@ export default async function handler(req, res) {
   try {
     const body = req.body || {};
 
-    const prompt = cleanText(
-      body.prompt ||
-        body.message ||
-        body.query ||
-        "",
-      14000
-    );
+    const career = extractCareer(body);
 
-    const webSearch = Boolean(
-      body.webSearch ||
-        body.searchWeb ||
-        body.liveResearch
-    );
-
-    if (!prompt) {
-      return res.status(400).json({
-        ok: false,
-        error: "Prompt is required"
-      });
-    }
+    const webSearch =
+      body.webSearch === true ||
+      body.webSearch === "true";
 
     let sources = [];
 
     if (webSearch) {
-      const career = extractCareer(prompt);
-
       sources = await searchWeb(
-        `${career} career India salary demand education skills`
+        `${career} India career education salary demand skills future scope`
       );
 
       sources = sources
         .sort(
           (a, b) =>
-            sourcePriority(b) -
-            sourcePriority(a)
+            sourcePriority(b.url) -
+            sourcePriority(a.url)
         )
         .slice(0, 8);
     }
@@ -237,89 +242,108 @@ export default async function handler(req, res) {
       ? sources
           .map(
             (s, i) =>
-              `${i + 1}. ${s.title}\n${s.url}\n${s.description}`
+              `${i + 1}. ${s.title}\nURL: ${s.url}`
           )
           .join("\n\n")
-      : "No live web sources were retrieved.";
+      : "No live web sources were found.";
 
-    const finalPrompt = `
-You are generating career guidance for CareerMitra.
+    const prompt = `
+Research and explain the following career for a student in India:
 
-User/student context:
-${prompt}
+CAREER:
+${career}
 
-${
-  webSearch
-    ? `
-LIVE WEB RESEARCH SOURCES:
+${body.studentProfile
+  ? `STUDENT PROFILE:
+${cleanText(JSON.stringify(body.studentProfile), 12000)}`
+  : ""}
+
+${body.vault
+  ? `PERSONAL VAULT:
+${cleanText(JSON.stringify(body.vault), 12000)}`
+  : ""}
+
+${body.familyConcerns
+  ? `FAMILY CONCERNS:
+${cleanText(JSON.stringify(body.familyConcerns), 12000)}`
+  : ""}
+
+LIVE WEB SOURCES:
 ${sourceText}
 
-Use these sources where relevant. Do not invent facts that are not supported by the available information.
-`
-    : ""
+Return ONLY valid JSON with this structure:
+
+{
+  "career": "${career}",
+  "what_it_involves": "",
+  "pros": [],
+  "cons": [],
+  "pay_india": "",
+  "market_requirements": [],
+  "demand": "",
+  "future_growth": "",
+  "step_by_step_path": [],
+  "academic_education": [],
+  "vocational_diploma": [],
+  "certifications": [],
+  "job_ready_skills": [],
+  "alternatives": [],
+  "barriers": [],
+  "rewards": [],
+  "public_discussion_themes": [],
+  "student_fit": "",
+  "family_concerns_addressed": [],
+  "sources": []
 }
 
-Return useful, practical information for an Indian student.
-
-If the request is about a specific career, cover where relevant:
-
-- What the career involves
-- Pros
-- Cons / trade-offs
-- Market
-- Current demand
-- Future growth
-- Indicative India pay
-- Academic education route
-- Vocational / diploma route
-- Certifications
-- Job-ready skills
-- Step-by-step pathway
-- Alternatives
-- Barriers
-- Rewards
-
-Keep the student's non-negotiable career separate and never silently replace it with another career.
-
-Return JSON wherever possible.
+Rules:
+- Keep salary clearly labelled as indicative.
+- Prefer India-specific information.
+- Separate academic and vocational/diploma routes.
+- Mention realistic skills needed for entry-level jobs.
+- Do not invent exact facts when evidence is unavailable.
+- If live sources were provided, use them as supporting references.
+- Keep the student's non-negotiable career intact.
 `;
 
-    const aiResponse =
-      await callAI(finalPrompt);
+    const aiResponse = await callAI(prompt);
 
-    const modelText =
-      extractModelText(aiResponse);
+    const modelText = extractModelText(aiResponse);
 
-    if (
-      !modelText ||
-      isBadResult(modelText)
-    ) {
+    let data = parseJSON(modelText);
+
+    if (!data) {
+      data = {
+        career,
+        answer: modelText
+      };
+    }
+
+    if (isBadResult(data)) {
       return res.status(502).json({
         ok: false,
-        error:
-          "AI returned an invalid response",
+        error: "AI returned an unusable result",
         sources
       });
     }
 
-    const parsed = parseJSON(modelText);
+    if (!data.sources || !Array.isArray(data.sources)) {
+      data.sources = sources;
+    }
 
     return res.status(200).json({
       ok: true,
-      data: parsed || modelText,
+      data,
       sources
     });
   } catch (error) {
-    console.error(
-      "CareerMitra AI error:",
-      error
-    );
+    console.error("CareerMitra AI error:", error);
 
     return res.status(500).json({
       ok: false,
       error:
         error?.message ||
-        "Internal server error"
+        "CareerMitra AI request failed"
     });
   }
 }
