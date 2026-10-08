@@ -206,9 +206,13 @@ let AI_READY=true;
 const CM_AI_CACHE_KEY='cm_ai_cache_v2';
 const CM_AI_CACHE_TTL=7*24*60*60*1000;
 const CM_AI_INFLIGHT=new Map();
+let CM_AI_QUEUE=Promise.resolve();
+let CM_AI_NEXT_AT=0;
+let CM_AI_COOLDOWN_UNTIL=0;
 function cmHash(str){let h=2166136261;for(let i=0;i<str.length;i++){h^=str.charCodeAt(i);h=Math.imul(h,16777619)}return (h>>>0).toString(16)}
+function cmSleep(ms){return new Promise(r=>setTimeout(r,Math.max(0,ms)))}
 function cmReadCache(key){try{const all=JSON.parse(localStorage.getItem(CM_AI_CACHE_KEY)||'{}');const x=all[key];if(x&&Date.now()-x.t<CM_AI_CACHE_TTL)return x.v;if(x)delete all[key];localStorage.setItem(CM_AI_CACHE_KEY,JSON.stringify(all));}catch(e){}return null}
-function cmWriteCache(key,v){try{const all=JSON.parse(localStorage.getItem(CM_AI_CACHE_KEY)||'{}');all[key]={t:Date.now(),v};const keys=Object.keys(all).sort((a,b)=>all[b].t-all[a].t).slice(0,18);const keep={};keys.forEach(k=>keep[k]=all[k]);localStorage.setItem(CM_AI_CACHE_KEY,JSON.stringify(keep));}catch(e){}}
+function cmWriteCache(key,v){try{const all=JSON.parse(localStorage.getItem(CM_AI_CACHE_KEY)||'{}');all[key]={t:Date.now(),v};const keys=Object.keys(all).sort((a,b)=>all[b].t-all[a].t).slice(0,24);const keep={};keys.forEach(k=>keep[k]=all[k]);localStorage.setItem(CM_AI_CACHE_KEY,JSON.stringify(keep));}catch(e){}}
 async function ai(){return AI_READY}
 async function aiJson(prompt,opts={}){
   if(!prompt||typeof prompt!=='string')return null;
@@ -217,8 +221,11 @@ async function aiJson(prompt,opts={}){
   const bypassCache=opts.bypassCache===true;
   if(!bypassCache){const cached=cmReadCache(cacheKey);if(cached){AI_READY=true;window.CM_AI_ERROR='';return cached}}
   if(CM_AI_INFLIGHT.has(cacheKey))return CM_AI_INFLIGHT.get(cacheKey);
-  const job=(async()=>{
+  const job=(CM_AI_QUEUE=CM_AI_QUEUE.then(async()=>{
     try{
+      const wait=Math.max(0,CM_AI_NEXT_AT-Date.now(),CM_AI_COOLDOWN_UNTIL-Date.now());
+      if(wait)await cmSleep(wait);
+      CM_AI_NEXT_AT=Date.now()+450;
       const r=await fetch('/api/ai',{
         method:'POST',
         headers:{'Content-Type':'application/json'},
@@ -226,6 +233,8 @@ async function aiJson(prompt,opts={}){
       });
       const data=await r.json().catch(()=>null);
       if(!r.ok){
+        const retrySec=Number(data&&data.retryAfter)||0;
+        if(r.status===429)CM_AI_COOLDOWN_UNTIL=Date.now()+Math.max(5000,Math.min(30000,retrySec*1000||8000));
         const retry=data&&data.retryAfter?` Retry after ${data.retryAfter} seconds.`:'';
         window.CM_AI_ERROR=(data&&data.error)||('API error '+r.status)+retry;
         return null;
@@ -245,7 +254,7 @@ async function aiJson(prompt,opts={}){
       window.CM_AI_ERROR=e&&e.message?e.message:String(e);
       return null;
     }
-  })();
+  }).catch(e=>{window.CM_AI_ERROR=e&&e.message?e.message:String(e);return null;}));
   CM_AI_INFLIGHT.set(cacheKey,job);
   try{return await job}finally{CM_AI_INFLIGHT.delete(cacheKey)}
 }
@@ -538,7 +547,7 @@ function localPool(v){
    {b:`Strong subject: ${s2}`,q:`What do you enjoy most in ${s2}?`,o:[T('Thinking about why it works','I'),T('Using it to make something','R'),T('Teaching it to others','S'),T('Using it to start something new','E')]},
    {b:`Skill / subject: ${sk1}`,q:`With your ${sk1} skill, what would you rather do?`,o:[T('Make a project','R'),T('Learn the ideas behind it','I'),T('Make something new','A'),T('Help others learn it','S')]},
    {b:`Strong subject: ${s1}`,q:`When you get stuck in ${s1}, what do you do?`,o:[T('Look for a pattern','I'),T('Try different ways','R'),T('Ask a friend','S'),T('Go back to the book steps','C')]},
-   {b:`Strong subject: ${s1}`,q:`What keeps you going to get better at ${s1}?`,o:[T('I am curious how it works','I'),T('I want good results','C'),T('I like making things with it','R'),T('I want to be known for it','E')]},
+   {b:`Strong subject: ${s1}`,q:`What keeps you going to get better at ${s1}?`,o:[T('I am curious how it works','I'),T('I want good results','C'),T('I like making things with it','R'),T('I like setting a clear target for it','E')]},
    {b:`Strong subject: ${s2}`,q:`How do you feel about explaining ${s2} to a friend?`,o:[T('I love it — I enjoy teaching','S'),T('I would share a good book or link','I'),T('I would write neat notes first','C'),T('I would make a small talk about it','E')]}
   ];
   const sub=[...know,...SSt];
@@ -554,8 +563,34 @@ function localPool(v){
   ];
   return{'Personality':P,'Situation reaction':S,'Interests & likings':I_,'Basic intelligence':B,'Strong subject / skills':sub,'Career opinion':C};
 }
-function localCat(v,cat,n){return localPool(v)[cat].slice(0,n).map(q=>({cat,basedOn:q.b,q:q.q,o:shuf(q.o)}))}
+function neutralizeLocalOptions(qs,cat){
+  return qs.map(q=>{
+    const o=shuf((q.o||[]).map(x=>({...x})));
+    return {...q,cat,o};
+  });
+}
+function localCat(v,cat,n){return neutralizeLocalOptions(localPool(v)[cat].slice(0,n).map(q=>({cat,basedOn:q.b,q:q.q,o:q.o})),cat)}
 function localQuestions(v){return TQ_PLAN.flatMap(([c,n])=>localCat(v,c,n))}
+function vaultTokens(v){
+  const raw=[...arr(v&&v.interests),...arr(v&&v.hobbies),...arr(v&&v.likings),...arr(v&&v.subjects).map(x=>x&&x.name),...roleNames(v||{}),...arr(v&&v.skills).map(x=>x&&x.name),v&&v.field,v&&v.nonnegotiable,...arr(v&&v.alternatives)].filter(Boolean).map(x=>String(x).trim()).filter(x=>x.length>=3);
+  return [...new Set(raw)];
+}
+function usesVault(qs,v){
+  const tokens=vaultTokens(v);
+  if(!tokens.length)return 0;
+  return qs.filter(q=>{
+    const hay=(String(q.basedOn||'')+' '+String(q.q||'')).toLowerCase();
+    return tokens.some(t=>hay.includes(t.toLowerCase()));
+  }).length;
+}
+function exactVaultSourcesFor(cat,v){
+  const vals={
+    'Interests & likings':[...arr(v&&v.interests),...arr(v&&v.hobbies),...arr(v&&v.likings)],
+    'Strong subject / skills':[...arr(v&&v.subjects).map(x=>x&&x.name),...arr(v&&v.skills).map(x=>x&&x.name)],
+    'Career opinion':[v&&v.field,v&&v.nonnegotiable,...roleNames(v||{}),...arr(v&&v.alternatives)]
+  };
+  return [...new Set((vals[cat]||[]).filter(Boolean).map(x=>String(x).trim()).filter(x=>x.length>=3))];
+}
 function validQuestions(r,count){
   if(!r||!Array.isArray(r.questions)||r.questions.length!==count)return null;
   const out=[];
@@ -582,20 +617,39 @@ function validQuestions(r,count){
 }
 function questionQualityIssues(qs,v){
   const issues=[];
-  const moral=/\b(best|better|worse|good person|bad person|successful person|smart person|lazy|responsible person|irresponsible|should choose|must choose)\b/i;
-  const leading=/\b(obviously|clearly|of course|definitely|only sensible|safe choice|dream career)\b/i;
+  const moral=/\b(best|better|worse|good person|bad person|successful person|smart person|lazy|responsible person|irresponsible|should choose|must choose|right career|wrong career|safe choice|only sensible)\b/i;
+  const leading=/\b(obviously|clearly|of course|definitely|only sensible|dream career|perfect career|guaranteed|always|never)\b/i;
+  const absurd=/\b(do nothing|whatever|i don't care|i dont care|give up immediately|quit everything|sleep all day|ignore it completely|anything is fine)\b/i;
+  const seenQ=new Set();
+  const namedRoles=[...roleNames(v),v&&v.nonnegotiable,v&&v.field,...arr(v&&v.alternatives)].filter(Boolean).map(x=>String(x).trim().toLowerCase()).filter(x=>x.length>=4);
   qs.forEach((q,i)=>{
-    const opts=q.o.map(o=>o.text.trim());
-    if(q.q.length>220||opts.some(x=>x.length>120))issues.push(`Q${i+1}: too long`);
-    if(q.cat!=='Basic intelligence'&&q.cat!=='Strong subject / skills'&&opts.some(x=>moral.test(x)||leading.test(x)))issues.push(`Q${i+1}: leading/value-loaded option`);
-    const namedRoles=[...roleNames(v),v.nonnegotiable,v.field,...arr(v.alternatives)].filter(Boolean).map(x=>String(x).trim().toLowerCase()).filter(x=>x.length>=4);
+    const opts=q.o.map(o=>String(o&&o.text||'').trim());
+    const normQ=q.q.toLowerCase().replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim();
+    if(seenQ.has(normQ))issues.push(`Q${i+1}: repeated question`); seenQ.add(normQ);
+    if(!TQ_PLAN.some(([cat])=>cat.toLowerCase()===String(q.cat||'').trim().toLowerCase()))issues.push(`Q${i+1}: invalid category`);
+    if(q.q.length>220||opts.some(x=>x.length<3||x.length>140))issues.push(`Q${i+1}: option/question length problem`);
+    const lens=opts.map(x=>x.split(/\s+/).filter(Boolean).length);const min=Math.max(1,Math.min(...lens)),max=Math.max(...lens);
+    if(max/min>3.2)issues.push(`Q${i+1}: option lengths are not comparable`);
+    if(q.cat!=='Basic intelligence'&&q.cat!=='Strong subject / skills'&&opts.some(x=>moral.test(x)||leading.test(x)||absurd.test(x)))issues.push(`Q${i+1}: leading/value-loaded/absurd option`);
     if(q.cat!=='Basic intelligence'&&q.cat!=='Strong subject / skills'&&namedRoles.some(name=>opts.some(x=>x.toLowerCase().includes(name))))issues.push(`Q${i+1}: option directly names a personal career/field`);
     if(q.cat!=='Basic intelligence'&&q.cat!=='Strong subject / skills'&&new Set(opts.map(x=>x.toLowerCase().replace(/[^a-z0-9 ]/gi,''))).size<4)issues.push(`Q${i+1}: duplicate options`);
+    if(!String(q.basedOn||'').trim())issues.push(`Q${i+1}: missing evidence source`);
+    if(q.cat==='Interests & likings'){
+      const src=exactVaultSourcesFor(q.cat,v);if(src.length && !src.some(x=>(String(q.basedOn||'')+' '+q.q).toLowerCase().includes(x.toLowerCase())))issues.push(`Q${i+1}: not grounded in an exact interest/hobby/liking`);
+    }
+    if(q.cat==='Strong subject / skills'){
+      const src=exactVaultSourcesFor(q.cat,v);if(src.length && !src.some(x=>(String(q.basedOn||'')+' '+q.q).toLowerCase().includes(x.toLowerCase())))issues.push(`Q${i+1}: not grounded in an exact subject/skill`);
+    }
+    if(q.cat==='Career opinion'){
+      const src=exactVaultSourcesFor(q.cat,v);if(src.length && !src.some(x=>(String(q.basedOn||'')+' '+q.q).toLowerCase().includes(x.toLowerCase())))issues.push(`Q${i+1}: not grounded in the student's stated career/field/alternative`);
+    }
   });
   const cats={};qs.forEach(q=>(cats[q.cat]??=[]).push(q));
   for(const [cat,n] of TQ_PLAN){if((cats[cat]||[]).length!==n)issues.push(`${cat}: expected ${n}, got ${(cats[cat]||[]).length}`)}
+  for(const cat of VAULT_CATS){const n=TQ_PLAN.find(x=>x[0]===cat)?.[1]||0;const got=(cats[cat]||[]).length;if(n){const need=Math.max(1,Math.ceil(n*.75));const hit=usesVault(cats[cat]||[],v);if(hit<need)issues.push(`${cat}: only ${hit}/${n} questions are grounded in the Personal Vault`)}}
   return issues;
 }
+
 const CAT_RULES={
  'Personality':'Ask about the student’s natural preferences and everyday working style. Do not mention a career. Options must be four genuinely plausible ways to respond to the same situation, not one obviously admirable answer.',
  'Situation reaction':'Use simple school, study, home, group-work, deadline, mistake or problem situations. Do not mention careers. Every option must be a realistic action a student might actually take; no option may sound stupid, lazy, heroic or morally superior.',
@@ -606,55 +660,64 @@ const CAT_RULES={
 };
 function buildTestPrompt(vault,stage){
   const plan=TQ_PLAN.map(([cat,n])=>`${cat}: exactly ${n}`).join('\n');
-  return `You are CareerMitra’s neutral Test Zone designer. You are designing a self-discovery test, not selling a career.
+  const vaultItems=vaultTokens(vault).map(x=>`- ${x}`).join('\n')||'- No detailed Vault item was supplied.';
+  return `You are CareerMitra's neutral Test Zone designer. You are designing a self-discovery test, not selling a career and not trying to prove a predetermined personality type.
 
 STUDENT LIFE STAGE: ${stage}
-QUESTION PLAN:\n${plan}\nTOTAL: ${TQ_N}
+QUESTION PLAN:
+${plan}
+TOTAL: ${TQ_N}
 
-PERSONAL VAULT (the ONLY personal evidence you may use):\n${JSON.stringify(vault)}
+PERSONAL VAULT — THIS IS THE ONLY PERSONAL EVIDENCE YOU MAY USE:
+${JSON.stringify(vault)}
+EXACT VAULT ITEMS AVAILABLE FOR PERSONALISATION:
+${vaultItems}
 
-CORE PRINCIPLE
-- The student’s own information is the only basis for personalization.
-- Do not assume that a popular, prestigious, high-paying, government, technical, medical, business, creative or any other career is better.
-- Do not favour the non-negotiable career, preferred role, chosen field or any other item. Those are inputs to understand the student, not answers to push them toward.
-- Do not use age, gender, family income, location, school, marks or other profile details to steer a career unless the question genuinely asks about that exact personal factor. Never stereotype.
-- Do not reward or punish a student for choosing a particular option.
+NON-BIAS PRINCIPLES
+- Start from the student's actual information only. Do not add facts that are not present.
+- No career, degree, stream, employer type, salary level, government job, medical field, technology field, business field, creative field or any other direction is inherently better.
+- A non-negotiable career, preferred role, chosen field or alternative is a preference signal only. Never turn it into a correct answer or repeatedly steer toward it.
+- Do not use gender, family income, location, school, marks, prestige or stereotypes to steer the student.
+- Do not infer ability, intelligence, maturity or character from a single preference.
 
 QUESTION QUALITY
-- Very simple, polite English. Short sentences. One clear idea per question.
-- Every option must be plausible for a real student answering honestly.
-- Options must be comparable: similar length, same level of detail, same tone and the same kind of response.
-- No silly, fake, extreme, impossible, insulting, heroic or obviously wrong distractors.
-- No option should be obviously more mature, kind, intelligent, ambitious, safe or successful than the others.
-- Never make one option sound emotionally nicer or socially more acceptable.
-- Avoid double negatives, tricky wording and hidden assumptions.
-- Do not repeat the same question, same option pattern or same vault item unnecessarily.
-- Questions must measure preference/behaviour/interest/reflection, not whether the student can guess the “expected” answer.
+- Use very simple, polite English. One clear idea per question.
+- Every option must be a realistic answer a student could honestly choose.
+- Four options must be comparable in tone, length, specificity and emotional value.
+- Do NOT create one “good”, “smart”, “safe”, “kind”, “ambitious”, “successful” or “mature” option.
+- Do NOT create silly, extreme, lazy, heroic, insulting, impossible or obviously fake options.
+- Avoid double negatives, hidden assumptions, emotionally loaded wording and career-selling language.
+- Do not repeat a question or reuse the same exact Vault item unnecessarily.
+- For interest questions, keep all four options about the same real activity or topic; vary only the way the student might engage with it.
+- For situation questions, all four options must be reasonable responses, with no moral winner.
+- For career-opinion questions, ask about the student's own priorities and uncertainty; never ask which career is “best”.
 
 CATEGORY RULES
 ${Object.entries(CAT_RULES).map(([k,v])=>`${k}: ${v}`).join('\n')}
 
+PERSONALISATION REQUIREMENTS
+- Interests & likings: at least 3 of 4 questions must use different exact items from interests, hobbies or likings. Put the exact item in basedOn and naturally in the question.
+- Strong subject / skills: at least 3 of 4 must use different exact subjects or verified skills when those items exist. Never invent a subject or skill.
+- Career opinion: use the actual field, preferred roles, alternatives, non-negotiable career or reasons, but distribute them across the 5 questions and keep every option neutral.
+- Personality and Situation reaction may use Vault context only when it makes the situation natural; they must not become career questions.
+- Basic intelligence must be independent of the student's career and should use one clear correct answer plus three believable distractors.
+
 TRAIT MAPPING
-For non-factual questions, each of the four options must have a different Holland code from R,I,A,S,E,C. The code is an internal scoring label and must NOT be visible in the option text. Across the full test, rotate the combinations so no one trait repeatedly appears as the “good” or first-looking choice.
-For factual reasoning/knowledge questions, use exactly one correct:true and three plausible distractors. Distractors must be believable but clearly wrong after knowing the concept; never use nonsense.
+For non-factual questions, each of the four options must have a different internal Holland code from R,I,A,S,E,C. The code is hidden from the student. Rotate which code appears first and do not repeatedly make one code sound better.
+For factual reasoning/knowledge questions, use exactly one correct:true and three plausible, topic-relevant distractors. No nonsense distractors.
 
-VAULT USE
-- Interests & likings: at least 3 of 4 questions must use different exact vault items.
-- Strong subject / skills: use actual listed subjects/verified skills where appropriate; do not invent skills.
-- Career opinion: use actual chosen field, preferred roles, alternatives or reasons, but keep the options neutral.
-- Personality and situation questions may use hobbies/likings only when natural.
-- Put the exact source in basedOn, e.g. “Interests: Robotics”, “Likings: Building things”, “Role: Data Scientist / ML Engineer”, “General reasoning”.
-
-SELF-CHECK BEFORE RETURNING
-For every question ask yourself: “Could a student reasonably choose any of these four options without being pushed toward a particular career or personality?” If not, rewrite it. Also check that the four options are all useful, natural and comparable.
+SELF-AUDIT BEFORE RETURNING
+For every question check: “Could a student reasonably choose any option without being pushed toward a particular career, personality type or socially desirable answer?” If not, rewrite it.
+Also check: exact Vault grounding where required; four distinct plausible options; comparable option length; no repeated stems; no unsupported personal facts; correct answer only for factual questions.
 
 RETURN ONLY JSON:
-{"questions":[{"cat":"Category name","basedOn":"exact vault source or General reasoning","q":"question","o":[{"text":"option","trait":"R"},{"text":"option","trait":"I"},{"text":"option","trait":"A"},{"text":"option","trait":"S"}]}]}
+{"questions":[{"cat":"Category name","basedOn":"exact Vault source or General reasoning","q":"question","o":[{"text":"option","trait":"R"},{"text":"option","trait":"I"},{"text":"option","trait":"A"},{"text":"option","trait":"S"}]}]}
 For factual questions use correct:true/false instead of trait.
-Return exactly ${TQ_N} questions with the exact category counts. No markdown.`;
+Return exactly ${TQ_N} questions with the exact category counts. No markdown. No explanation.`;
 }
+
 async function makeQuestions(s){
-  const v=s.vault;
+  const v=s.vault||{};
   const vault={
     interests:arr(v.interests),hobbies:arr(v.hobbies),likings:arr(v.likings),
     strongSubjects:arr(v.subjects).map(x=>`${x.name} (${LEVELS[x.level-1]||'Good'})`),
@@ -666,36 +729,41 @@ async function makeQuestions(s){
   const stage=STAGES[s.stage]?STAGES[s.stage].t+' — '+STAGES[s.stage].d:'student';
   S.tload=0;window.CM_TEST_AI_SOURCES={};
   const prompt=buildTestPrompt(vault,stage);
-  let result=await aiJson(prompt,{bypassCache:true});
+  let result=await aiJson(prompt);
   let all=validQuestions(result,TQ_N)||[];
   let issues=all.length===TQ_N?questionQualityIssues(all,v):['AI response was incomplete or structurally invalid.'];
 
-  // Quality repair stays AI-first. We do not silently downgrade a valid-looking but poor test.
-  if(all.length!==TQ_N||issues.length){
-    const repairPrompt=prompt+`\n\nQUALITY REPAIR PASS\nYour previous draft did not pass the following checks:\n${issues.slice(0,30).join('\n')}\nRegenerate the COMPLETE ${TQ_N}-question test from scratch. Fix the quality issues, especially biased/absurd options, repeated patterns, weak distractors and any steering toward a career. Return ONLY JSON.`;
+  // AI remains the primary generator. A second AI pass is used only when the first
+  // response fails the structural/neutrality/Vault-grounding gate.
+  if((all.length!==TQ_N||issues.length) && !/429|rate limit|rate_limit|quota/i.test(window.CM_AI_ERROR||'')){
+    const repairPrompt=prompt+`
+
+QUALITY AUDIT FAILED
+The previous response did not pass these checks:
+${issues.slice(0,40).join('\n')}
+Generate the COMPLETE test again. Keep every question neutral, natural and grounded in the student's actual Vault. Do not defend the previous draft. Return ONLY JSON.`;
     result=await aiJson(repairPrompt,{bypassCache:true});
     all=validQuestions(result,TQ_N)||[];
     issues=all.length===TQ_N?questionQualityIssues(all,v):['AI repair was incomplete or invalid.'];
   }
 
-  const out={};const sources={};
-  for(const [cat,n] of TQ_PLAN){
-    const aiPart=all.filter(q=>String(q.cat||'').trim().toLowerCase()===cat.toLowerCase());
-    const vaultNeed=VAULT_CATS.includes(cat)?Math.ceil(n*.75):0;
-    const vaultHit=VAULT_CATS.includes(cat)?usesVault(aiPart,v):n;
-    if(aiPart.length===n && vaultHit>=vaultNeed && !issues.some(x=>x.startsWith(cat+':'))){
-      out[cat]=aiPart.map(x=>({...x,cat}));sources[cat]='ai';
-    }else{
-      // Last-resort only: existing built-in questions keep the app usable if the AI provider truly fails.
-      out[cat]=localCat(v,cat,n);sources[cat]='builtin';
-    }
+  if(all.length===TQ_N && !issues.length){
+    const q=all.map(x=>({...x,cat:String(x.cat).trim()}));
+    const sources={};TQ_PLAN.forEach(([cat])=>sources[cat]='ai');
+    window.CM_TEST_AI_SOURCES=sources;
+    S.tload=TQ_PLAN.length;if(S.tstate==='loading')render(true);
+    return{q,src:'ai',sources};
   }
+
+  // Last-resort only: if the provider cannot produce a valid neutral test after
+  // the recovery pass, use the local safety net so the app remains usable.
+  const out={};const sources={};
+  for(const [cat,n] of TQ_PLAN){out[cat]=localCat(v,cat,n);sources[cat]='builtin';}
   window.CM_TEST_AI_SOURCES=sources;
   const q=TQ_PLAN.flatMap(([cat])=>out[cat]||[]);
-  if(q.length!==TQ_N){window.CM_AI_ERROR='Test Zone could not assemble the complete test.';return null;}
+  if(q.length!==TQ_N){window.CM_AI_ERROR='The AI could not produce a valid complete test, and the recovery test was incomplete.';return null;}
   S.tload=TQ_PLAN.length;if(S.tstate==='loading')render(true);
-  const usedFallback=Object.values(sources).some(x=>x==='builtin');
-  return{q,src:usedFallback?'mixed':'ai',sources};
+  return{q,src:'fallback',sources};
 }
 
 /* ================= analysis ================= */
@@ -804,13 +872,14 @@ function localGenuine(a,others){
   return null;
 }
 function concernNote(text,an){
-  const t=text.toLowerCase(),top=an.roles.slice(0,3);
-  if(/money|salary|income|fee|loan|financ|afford|pay|cost/.test(t))return'Financial concern → market value for the top roles: '+top.map(r=>`${r.n}: ${r.mkt}`).join(' | ');
-  if(/society|people|relative|respect|neighbo|log kya|status|prestige|shame/.test(t))return'Respect / society concern → '+top.map(r=>r.n).join(', ')+' are established career paths; each card lists alternatives that may feel more familiar to the family.';
-  if(/scope|future|growth|demand|trend|stable|security/.test(t))return'Future-scope concern → see the “market value” line on each role; the top roles show '+(top.some(r=>/high|growing|stable/i.test(r.mkt))?'healthy demand or stability':'selective demand')+'.';
-  if(/stream|science|commerce|arts|degree|engineer|doctor|prefer/.test(t))return'Stream preference → compare with the alternatives listed for each role; many roles can be reached from more than one stream.';
-  return'Recorded as a family concern and considered alongside the student’s personality profile.';
+  const t=String(text||'').toLowerCase();
+  if(/money|salary|income|fee|loan|financ|afford|pay|cost/.test(t))return'Financial topic recorded. CareerMitra will compare the stated concern with verified market information rather than assuming that higher pay is better.';
+  if(/society|people|relative|respect|neighbo|log kya|status|prestige|shame/.test(t))return'Social or family-expectation topic recorded. This is treated as the family’s perspective, not as a reason that a career is objectively better.';
+  if(/scope|future|growth|demand|trend|stable|security/.test(t))return'Future or stability topic recorded. Current evidence and uncertainty are kept separate in the analysis.';
+  if(/stream|science|commerce|arts|degree|engineer|doctor|prefer/.test(t))return'Education or career preference recorded. It is compared with the student’s evidence rather than treated as a correct choice.';
+  return'Recorded as the family’s own perspective and considered alongside the student’s evidence.';
 }
+
 const studentDone=s=>!!(s&&s.profile&&vaultDone(s)&&s.test&&s.test.tally);
 const accepted=f=>arr(f&&f.qa).filter(x=>x.accepted).length;
 const familyDone=f=>!!(f&&f.profile&&f.status&&(f.status==='supportive'||accepted(f)>=fqMin(f)));
@@ -1427,7 +1496,7 @@ async function requestCommonGroundAI(){
     if(u.role==='student'){s=DB.students[u.id];fams=linkedFamilies(s)}
     else{const f=DB.families[u.id];const r=f.profile&&studentByCode(f.profile.linkCode);s=r?r[1]:null;fams=s?linkedFamilies(s):[]}
     if(!s||!studentDone(s))return;
-    const acceptedConcerns=fams.flatMap(([id,f])=>arr(f.qa).filter(x=>x.accepted&&String(x.a||'').trim()).map(x=>({question:String(x.q||''),answer:String(x.a||'')})));
+    const acceptedConcerns=fams.flatMap(([id,f])=>arr(f.qa).filter(x=>x.accepted&&String(x.a||'').trim()).map(x=>({question:String(x.q||''),answer:String(x.a||''),aiInterpretation:x.ai||null})));
     if(!acceptedConcerns.length)return;
     const key=JSON.stringify({rev:s.vault&&s.vault.rev,test:s.test&&s.test.takenAt,family:acceptedConcerns});
     if(s.commonGroundAI&&s.commonGroundAI.key===key)return;
@@ -1438,7 +1507,7 @@ async function requestCommonGroundAI(){
     const prompt=`You are CareerMitra's strict Common Ground decision-support analyst.\n\nYour job is NOT to make generic career suggestions. Select up to 3 careers only after comparing BOTH sides.\n\nSTUDENT TEST ANALYSIS:\n${JSON.stringify({personalityType:an.type,personalityShare:an.share,rankedCareers:an.roles.slice(0,8).map(r=>({name:r.n,rank:r.rank,fitEvidence:r.strong,watchouts:r.watch})),vault:{interests:s.vault.interests,hobbies:s.vault.hobbies,likings:s.vault.likings,strongSubjects:subjNames(s.vault),skills:skillNames(s.vault),preferredRoles:roleNames(s.vault),field:s.vault.field,nonNegotiable:s.vault.nonnegotiable,alternatives:s.vault.alternatives}})}\n\nACCEPTED FAMILY CONCERNS (use the actual answers, not assumptions):\n${JSON.stringify(acceptedConcerns)}\n\nCAREER CANDIDATES:\n${JSON.stringify(careers)}\n\nSTRICT RULES:\n1. A career must have evidence of student fit AND evidence addressing at least one real family concern.\n2. Never claim a family concern is satisfied unless the career data actually supports it.\n3. If a career conflicts with an important concern, record the conflict. Do not hide it.\n4. Do not select a career merely because it is popular, high-paying, or already the non-negotiable career.\n5. The student's non-negotiable career must remain visible separately; it may be selected only if BOTH sides support it.\n6. Use the student's Test Zone pattern, not just their typed preference.\n7. Use the parent's actual wording as evidence.\n8. If fewer than 3 careers genuinely satisfy both sides, return fewer than 3. NEVER fill the list with weak or invented matches.\n9. Return only JSON.\n\nFORMAT:\n{"picks":[{"career":"exact candidate name","studentEvidence":["..."],"familyEvidence":["..."],"conflicts":["..."],"fit":"Strong|Moderate","reason":"short explanation"}]}`;
     let ai=await aiJson(prompt);
     let picks=Array.isArray(ai&&ai.picks)?ai.picks.filter(x=>x&&typeof x.career==='string').slice(0,3):[];
-    if(!picks.length){
+    if(!picks.length && !/429|rate limit|rate_limit|quota/i.test(window.CM_AI_ERROR||'')){
       ai=await aiJson(prompt+`\n\nRECOVERY PASS: Re-evaluate the evidence-gated candidates. Return up to 3 genuine common-ground careers only. If the evidence does not support 3, return fewer. JSON only.`,{bypassCache:true});
       picks=Array.isArray(ai&&ai.picks)?ai.picks.filter(x=>x&&typeof x.career==='string').slice(0,3):[];
     }
@@ -1469,7 +1538,7 @@ function scoreView(){
   return bar+`<div class="card"><h2>${esc(s.profile.fullName)} — Scorecard &amp; Analysis</h2><p class="muted">${stg?stg.t+' · ':''}Combined view of the student’s Test Zone result and the family’s perspective.</p></div>`+staleNote(s)+html+anchorCareerBlock(s,an)+
    `<div class="card"><h2>Suitable careers</h2><p class="muted small">Open each role for alternatives, pros, cons and market value.</p></div>`+rolesBlock(an,false)+
    `<div class="card"><h2>Family perspective</h2>${fOk.map(([id,f])=>`<div class="qa"><div class="row sp"><b>${esc(f.profile.fullName)} <span class="muted small">(${esc(f.profile.relation)})</span></b><span class="fit ${f.status==='supportive'?'s':'p'}">${f.status==='supportive'?'Supportive':'Unsatisfied'} · ${f.rating}/10</span></div>
-     ${f.status==='supportive'?'<p class="muted">The family supports the suggested career directions.</p>':f.qa.filter(x=>x.accepted).map(x=>`<div class="qa"><b>${esc(x.q)}</b><p style="margin:4px 0">“${esc(x.a)}”</p><div class="note info small">${esc(concernNote(x.a,an))}</div></div>`).join('')}</div>`).join('')}</div>`+familyIntersectionBlock(s,an,fOk);
+     ${f.status==='supportive'?'<p class="muted">The family has recorded support. Generic support is not treated as proof for any specific career.</p>':f.qa.filter(x=>x.accepted).map(x=>`<div class="qa"><b>${esc(x.q)}</b><p style="margin:4px 0">“${esc(x.a)}”</p><div class="note info small">${x.ai&&x.ai.evidence?esc(x.ai.evidence):esc(concernNote(x.a,an))}${x.ai&&x.ai.dimensions&&x.ai.dimensions.length?`<br><span class="muted">Topics detected: ${esc(x.ai.dimensions.join(' · '))}</span>`:''}</div></div>`).join('')}</div>`).join('')}</div>`+familyIntersectionBlock(s,an,fOk);
 }
 
 /* ================= router ================= */
@@ -1736,9 +1805,9 @@ ANALYSIS TASK
 RETURN ONLY JSON:
 {"summary":"2-4 simple sentences","personalityType":"short neutral description","coreInterests":["..."],"traits":["..."],"careerDirections":["..."],"rankedCareers":[{"name":"career direction","fit":"Strong|Moderate|Possible","score":0.0,"evidence":["..."],"watchouts":["..."],"tradeoffs":["..."],"reason":"...","path":["..."],"alternatives":["..."]}],"careerInclination":"1-2 gentle sentences"}`;
 
-  let r=await aiJson(analysisPrompt,{bypassCache:true});
+  let r=await aiJson(analysisPrompt);
   let usedAI=!!(r&&typeof r.summary==='string'&&Array.isArray(r.rankedCareers)&&Array.isArray(r.traits)&&Array.isArray(r.coreInterests));
-  if(!usedAI){
+  if(!usedAI && !/429|rate limit|rate_limit|quota/i.test(window.CM_AI_ERROR||'')){
     r=await aiJson(analysisPrompt+`\n\nRECOVERY PASS: Re-read every supplied response. Return a complete valid JSON analysis. Do not invent a career preference and do not omit rankedCareers if there is enough evidence. If evidence is insufficient, return fewer careers. JSON only.`,{bypassCache:true});
     usedAI=!!(r&&typeof r.summary==='string'&&Array.isArray(r.rankedCareers)&&Array.isArray(r.traits)&&Array.isArray(r.coreInterests));
   }
@@ -1766,18 +1835,55 @@ function rate(status){
 }
 async function genFQ(){
   const f=fam(),s=linkedStudent(),an=analyse(s);S.fq='loading';render();
-  const roles=an.roles.slice(0,4).map(r=>r.n).join(', ');
-  const familyPrompt=`You help a family resolve disagreement about a student's career. The student prefers: ${roleNames(s.vault).join(', ')}; their most loved non-negotiable career is ${s.vault.nonnegotiable||'not specified'} (field: ${s.vault.field}; reason: ${s.vault.whyField}). Suggested roles from the test: ${roles}. The parent is unsatisfied. Write exactly 25 short, respectful, open-ended, all-different questions for the parent covering these themes (several questions each, from different angles): what they want for their child, preferred stream and why, why not the child's choice, what worries them, financial considerations, why they want the child to not pursue the interest and choose theirs, salary worries about the child's goal/role, respect or "what will people say" worries, and future scope of the role; also their dreams for the child, stream preference, loans/debt, job security, community reaction, living away from home, whether they have discussed it with the child, alternatives they'd accept, government-vs-private job preference, and what proof would convince them. Return ONLY JSON: {"questions":["..."]}`;
+  const vault=s&&s.vault?s.vault:{};
+  const familyPrompt=`You are CareerMitra's neutral family-perspective question designer.
+
+STUDENT DATA (use only to make questions relevant; never assume the student is right or wrong):
+${JSON.stringify({interests:arr(vault.interests),hobbies:arr(vault.hobbies),likings:arr(vault.likings),subjects:subjNames(vault),skills:skillNames(vault),preferredRoles:roleNames(vault),field:vault.field||'',nonNegotiable:vault.nonnegotiable||'',alternatives:arr(vault.alternatives)})}
+
+The family member has chosen to share their perspective. Create exactly 25 short, simple, respectful and non-leading questions. The purpose is to understand the family's actual views, not to persuade them toward or away from a career.
+
+COVER DIFFERENT AREAS WITHOUT ASSUMING A PROBLEM:
+- what the family values in a career
+- what they understand about the student's interests and choices
+- what they support and what they are uncertain about
+- education/training length and effort
+- cost, affordability, loans or financial limits only if relevant to them
+- income expectations and how important they are
+- job stability and future uncertainty
+- location, travel or living away from home if relevant
+- work-life and workload concerns
+- social pressure or respect only as an optional concern, not an assumption
+- safety/risk where relevant
+- alternatives they would accept
+- what evidence, trial, mentor, internship or results would increase confidence
+- what the student could explain better to the family
+- what the family hopes the student's working life will look like
+- what the family is willing to support
+
+NEUTRALITY RULES:
+- Never assume the family opposes the student's choice.
+- Never assume a government job, high salary, prestige, medicine, engineering, technology, business or any other path is better.
+- Never word a question so that one answer sounds more loving, responsible or intelligent.
+- If asking about a concern, allow “I do not have this concern” as a valid answer.
+- Use the student's actual Vault terms naturally, but do not repeat the same career or interest in every question.
+- Avoid asking the family to rank “best” careers. Ask about their own priorities and reasons.
+- Very simple English. One clear idea per question.
+
+RETURN ONLY JSON: {"questions":["..."]} with exactly 25 genuinely different questions.`;
   let r=await aiJson(familyPrompt);
   let base=r&&Array.isArray(r.questions)?r.questions.map(String).filter(x=>x.trim().length>10):[];
-  if(base.length<25){
-    r=await aiJson(familyPrompt+`\n\nRECOVERY PASS: The previous AI response contained fewer than 25 valid questions. Generate all 25 again. Return ONLY {"questions":[...]} with exactly 25 genuinely different questions.`,{bypassCache:true});
+  if(base.length<25 && !/429|rate limit|rate_limit|quota/i.test(window.CM_AI_ERROR||'')){
+    r=await aiJson(familyPrompt+`
+
+RECOVERY PASS: Generate all 25 again. Make them neutral, non-leading, distinct and simple. Return exactly 25 questions. JSON only.`,{bypassCache:true});
     base=r&&Array.isArray(r.questions)?r.questions.map(String).filter(x=>x.trim().length>10):[];
   }
-  const loc=FQ_LOCAL(roles);
-  f.questions=base.length>=20?[...base,...loc.filter(x=>!base.includes(x))].slice(0,FQ_N):loc;
+  const loc=FQ_LOCAL(an.roles.slice(0,4).map(r=>r.n).join(', '));
+  f.questions=base.length>=25?base.slice(0,25):loc;
   touch(f);save();S.fq=null;render();
 }
+
 async function submitAnswers(d){
   const f=fam();S.busy=true;
   const items=f.questions.map((q,i)=>({q,a:(d['a'+i]||'').trim()})).filter(x=>x.a);
@@ -1786,17 +1892,37 @@ async function submitAnswers(d){
   const res=items.map((it,i)=>({...it,keep:!!(prev(it.q)&&prev(it.q).a===it.a),note:localGenuine(it.a,items.filter((_,j)=>j!==i).map(x=>x.a))}));
   const pass=res.filter(r=>!r.note&&!r.keep);
   if(pass.length){
-    const judgePrompt=`Judge whether each parent's answer is a sincere, specific, relevant response to its question (reject gibberish, off-topic, trolling, or copy-pasted filler; short but honest answers are fine). Return ONLY JSON {"results":[{"ok":true|false,"reason":"short, kind reason if not ok"}]} in the same order (${pass.length} items): ${JSON.stringify(pass.map(p=>({q:p.q,a:p.a})))}`;
+    const judgePrompt=`You are CareerMitra's neutral family-answer analyst. Review each family answer against its question.
+Return ONLY JSON with one result for each item in the same order.
+For each answer:
+- ok: true only when it is a sincere, relevant answer. Short honest answers are allowed.
+- reason: a short kind reason only if ok=false.
+- stance: one of "supportive","concern","preference","mixed","neutral".
+- dimensions: choose only dimensions clearly present: ["interest","income","cost","stability","future","education","competition","location","worklife","risk","social","skills","government","family_time","safety"].
+- evidence: 1 short sentence describing what the parent actually said, without adding assumptions.
+- strength: "clear","moderate" or "weak".
+Never infer a concern that the parent did not express. Never label generic support as support for a specific career.
+
+ITEMS (${pass.length}): ${JSON.stringify(pass.map(p=>({q:p.q,a:p.a})))}`;
     let j=await aiJson(judgePrompt);
-    if(!(j&&Array.isArray(j.results)&&j.results.length===pass.length)){
-      j=await aiJson(judgePrompt+`\n\nRECOVERY PASS: Return exactly ${pass.length} results in exactly the same order. Do not omit any item. JSON only.`,{bypassCache:true});
+    if(!(j&&Array.isArray(j.results)&&j.results.length===pass.length) && !/429|rate limit|rate_limit|quota/i.test(window.CM_AI_ERROR||'')){
+      j=await aiJson(judgePrompt+`
+
+RECOVERY PASS: Return exactly ${pass.length} results in the same order. Do not omit or merge items. JSON only.`,{bypassCache:true});
     }
-    if(j&&Array.isArray(j.results)&&j.results.length===pass.length)pass.forEach((p,i)=>{if(j.results[i]&&j.results[i].ok===false)p.note=j.results[i].reason||'This answer doesn’t seem to address the question. Please try again.'});
+    if(j&&Array.isArray(j.results)&&j.results.length===pass.length){
+      pass.forEach((p,i)=>{
+        const z=j.results[i]||{};
+        if(z.ok===false)p.note=z.reason||'This answer does not seem to address the question. Please try again.';
+        p.ai={stance:['supportive','concern','preference','mixed','neutral'].includes(z.stance)?z.stance:'neutral',dimensions:Array.isArray(z.dimensions)?z.dimensions.filter(x=>['interest','income','cost','stability','future','education','competition','location','worklife','risk','social','skills','government','family_time','safety'].includes(x)).slice(0,6):[],evidence:String(z.evidence||'').trim(),strength:['clear','moderate','weak'].includes(z.strength)?z.strength:'weak'};
+      });
+    }
   }
-  f.qa=res.map(r=>({q:r.q,a:r.a,accepted:r.keep?true:!r.note,note:r.keep?'':(r.note||'')}));touch(f);save();S.busy=false;
+  f.qa=res.map(r=>({q:r.q,a:r.a,accepted:r.keep?true:!r.note,note:r.keep?'':(r.note||''),ai:r.ai||null}));touch(f);save();S.busy=false;
   const acc=accepted(f);
   toast(acc>=fqMin(f)?'Answers saved — they will appear in the Scorecard panel':`${acc} accepted so far. At least ${fqMin(f)} genuine answers are needed.`);render(true);
 }
+
 render();
 </script>
 </body>
