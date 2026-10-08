@@ -572,8 +572,30 @@ function neutralizeLocalOptions(qs,cat){
 function localCat(v,cat,n){return neutralizeLocalOptions(localPool(v)[cat].slice(0,n).map(q=>({cat,basedOn:q.b,q:q.q,o:q.o})),cat)}
 function localQuestions(v){return TQ_PLAN.flatMap(([c,n])=>localCat(v,c,n))}
 function vaultTokens(v){
-  const raw=[...arr(v&&v.interests),...arr(v&&v.hobbies),...arr(v&&v.likings),...arr(v&&v.subjects).map(x=>x&&x.name),...roleNames(v||{}),...arr(v&&v.skills).map(x=>x&&x.name),v&&v.field,v&&v.nonnegotiable,...arr(v&&v.alternatives)].filter(Boolean).map(x=>String(x).trim()).filter(x=>x.length>=3);
+  v=v||{};
+  const subjects=[...arr(v.subjects),...arr(v.strongSubjects)];
+  const skills=[...arr(v.skills),...arr(v.verifiedSkills)];
+  const roles=[...roleNames(v||{}),...arr(v.preferredRolesInPriorityOrder)];
+  const alternatives=[...arr(v.alternatives),...arr(v.alternativesConsidered)];
+  const raw=[
+    ...arr(v.interests),...arr(v.hobbies),...arr(v.likings),
+    ...subjects.map(x=>typeof x==='string'?x:x&&x.name),
+    ...roles.map(x=>typeof x==='string'?x:x&&x.name),
+    ...skills.map(x=>typeof x==='string'?x:x&&x.name),
+    v.field,v.chosenField,v.nonnegotiable,v.nonNegotiableCareer,
+    ...alternatives
+  ].filter(Boolean).map(x=>String(x).trim()).filter(x=>x.length>=3);
   return [...new Set(raw)];
+}
+function vaultSourceMatch(haystack,source){
+  const h=String(haystack||'').toLowerCase();
+  const s=String(source||'').toLowerCase().trim();
+  if(!s)return false;
+  if(h.includes(s))return true;
+  const words=s.replace(/[^a-z0-9 ]/g,' ').split(/\s+/).filter(w=>w.length>=4);
+  if(!words.length)return false;
+  const hits=words.filter(w=>h.includes(w)).length;
+  return words.length===1?hits===1:hits/words.length>=0.5;
 }
 function usesVault(qs,v){
   const tokens=vaultTokens(v);
@@ -635,13 +657,13 @@ function questionQualityIssues(qs,v){
     if(q.cat!=='Basic intelligence'&&q.cat!=='Strong subject / skills'&&new Set(opts.map(x=>x.toLowerCase().replace(/[^a-z0-9 ]/gi,''))).size<4)issues.push(`Q${i+1}: duplicate options`);
     if(!String(q.basedOn||'').trim())issues.push(`Q${i+1}: missing evidence source`);
     if(q.cat==='Interests & likings'){
-      const src=exactVaultSourcesFor(q.cat,v);if(src.length && !src.some(x=>(String(q.basedOn||'')+' '+q.q).toLowerCase().includes(x.toLowerCase())))issues.push(`Q${i+1}: not grounded in an exact interest/hobby/liking`);
+      const src=exactVaultSourcesFor(q.cat,v);if(src.length && !src.some(x=>vaultSourceMatch(String(q.basedOn||'')+' '+q.q,x)))issues.push(`Q${i+1}: not grounded in an interest/hobby/liking from the Vault`);
     }
     if(q.cat==='Strong subject / skills'){
-      const src=exactVaultSourcesFor(q.cat,v);if(src.length && !src.some(x=>(String(q.basedOn||'')+' '+q.q).toLowerCase().includes(x.toLowerCase())))issues.push(`Q${i+1}: not grounded in an exact subject/skill`);
+      const src=exactVaultSourcesFor(q.cat,v);if(src.length && !src.some(x=>vaultSourceMatch(String(q.basedOn||'')+' '+q.q,x)))issues.push(`Q${i+1}: not grounded in a subject/skill from the Vault`);
     }
     if(q.cat==='Career opinion'){
-      const src=exactVaultSourcesFor(q.cat,v);if(src.length && !src.some(x=>(String(q.basedOn||'')+' '+q.q).toLowerCase().includes(x.toLowerCase())))issues.push(`Q${i+1}: not grounded in the student's stated career/field/alternative`);
+      const src=exactVaultSourcesFor(q.cat,v);if(src.length && !src.some(x=>vaultSourceMatch(String(q.basedOn||'')+' '+q.q,x)))issues.push(`Q${i+1}: not grounded in the student's stated career/field/alternative`);
     }
   });
   const cats={};qs.forEach(q=>(cats[q.cat]??=[]).push(q));
@@ -660,7 +682,18 @@ const CAT_RULES={
 };
 function buildTestPrompt(vault,stage){
   const plan=TQ_PLAN.map(([cat,n])=>`${cat}: exactly ${n}`).join('\n');
-  const vaultItems=vaultTokens(vault).map(x=>`- ${x}`).join('\n')||'- No detailed Vault item was supplied.';
+  const vaultItems=[
+    ['Interests',arr(vault.interests)],
+    ['Hobbies',arr(vault.hobbies)],
+    ['Likings',arr(vault.likings)],
+    ['Strong subjects',arr(vault.strongSubjects)],
+    ['Preferred roles',arr(vault.preferredRolesInPriorityOrder)],
+    ['Verified skills',arr(vault.verifiedSkills)],
+    ['Chosen field',vault.chosenField||vault.field||''],
+    ['Non-negotiable career',vault.nonNegotiableCareer||vault.nonnegotiable||''],
+    ['Alternatives',arr(vault.alternativesConsidered)]
+  ].flatMap(([label,items])=>arr(items).filter(Boolean).map(x=>`- ${label}: ${typeof x==='string'?x:(x&&x.name)||String(x)}`));
+  const vaultItemText=vaultItems.join('\n')||'- No detailed Vault item was supplied.';
   return `You are CareerMitra's neutral Test Zone designer. You are designing a self-discovery test, not selling a career and not trying to prove a predetermined personality type.
 
 STUDENT LIFE STAGE: ${stage}
@@ -671,7 +704,7 @@ TOTAL: ${TQ_N}
 PERSONAL VAULT — THIS IS THE ONLY PERSONAL EVIDENCE YOU MAY USE:
 ${JSON.stringify(vault)}
 EXACT VAULT ITEMS AVAILABLE FOR PERSONALISATION:
-${vaultItems}
+${vaultItemText}
 
 NON-BIAS PRINCIPLES
 - Start from the student's actual information only. Do not add facts that are not present.
@@ -755,8 +788,8 @@ Generate the COMPLETE test again. Keep every question neutral, natural and groun
     return{q,src:'ai',sources};
   }
 
-  // Last-resort only: if the provider cannot produce a valid neutral test after
-  // the recovery pass, use the local safety net so the app remains usable.
+  // Last-resort safety net only. It is NEVER marked as AI-generated.
+  // Normal operation should reach the AI branch above; this exists solely for a hard provider failure.
   const out={};const sources={};
   for(const [cat,n] of TQ_PLAN){out[cat]=localCat(v,cat,n);sources[cat]='builtin';}
   window.CM_TEST_AI_SOURCES=sources;
