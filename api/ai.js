@@ -1,294 +1,285 @@
 export const maxDuration = 60;
 
+const PRIMARY_MODEL =
+  process.env.OPENROUTER_MODEL || "openrouter/free";
+
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
-// Free-first reliability chain
-const MODELS = [
-  "nvidia/nemotron-3-ultra-550b-a55b:free",
-  "nvidia/nemotron-3.5-lightning:free",
-  "nvidia/nemotron-3-super:free",
-  "openrouter/free"
-];
+const DEFAULT_SYSTEM = `
+You are the AI engine for CareerMitra, an AI-Enabled Career Counselling
+and Family Decision Support Platform.
 
-function cleanText(v) {
-  return String(v ?? "").replace(/\u0000/g, "").trim();
-}
-
-function stripFence(text) {
-  return String(text || "")
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```$/i, "")
-    .trim();
-}
-
-function parseJSON(text) {
-  if (!text) return null;
-
-  const s = stripFence(text);
-
-  try {
-    return JSON.parse(s);
-  } catch (_) {}
-
-  const a = s.indexOf("{");
-  const b = s.lastIndexOf("}");
-
-  if (a >= 0 && b > a) {
-    try {
-      return JSON.parse(s.slice(a, b + 1));
-    } catch (_) {}
-  }
-
-  const x = s.indexOf("[");
-  const y = s.lastIndexOf("]");
-
-  if (x >= 0 && y > x) {
-    try {
-      return JSON.parse(s.slice(x, y + 1));
-    } catch (_) {}
-  }
-
-  return null;
-}
-
-function extractText(data) {
-  const c = data?.choices?.[0];
-
-  if (typeof c?.message?.content === "string") {
-    return c.message.content.trim();
-  }
-
-  if (Array.isArray(c?.message?.content)) {
-    return c.message.content
-      .map(x =>
-        typeof x === "string"
-          ? x
-          : x?.text || ""
-      )
-      .join("")
-      .trim();
-  }
-
-  if (typeof c?.text === "string") {
-    return c.text.trim();
-  }
-
-  return "";
-}
+Rules:
+1. Return valid JSON whenever JSON is requested.
+2. Never invent personal information about the student or family.
+3. Use the supplied student/family data as the primary evidence.
+4. Do not silently replace the student's non-negotiable career.
+5. Distinguish evidence from assumptions.
+6. For career recommendations, consider BOTH student evidence and family concerns.
+7. Never force a recommendation merely to fill a requested number of results.
+8. If evidence is insufficient, explicitly say so.
+9. Keep answers practical, specific and suitable for Indian students.
+`;
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function requestModel(model, prompt, webSearch = false) {
-  const key = process.env.OPENROUTER_API_KEY;
+function cleanJsonText(text) {
+  if (!text) return "";
 
-  if (!key) {
-    throw new Error(
-      "OPENROUTER_API_KEY is missing in Vercel Environment Variables."
-    );
+  let s = String(text).trim();
+
+  s = s
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  const first = s.search(/[\[{]/);
+
+  if (first > 0) {
+    s = s.slice(first);
   }
 
-  const controller = new AbortController();
+  const lastObj = s.lastIndexOf("}");
+  const lastArr = s.lastIndexOf("]");
 
-  const timer = setTimeout(
-    () => controller.abort(),
-    webSearch ? 18000 : 12000
-  );
+  const last = Math.max(lastObj, lastArr);
+
+  if (last >= 0) {
+    s = s.slice(0, last + 1);
+  }
+
+  return s.trim();
+}
+
+function parseJSON(text) {
+  const cleaned = cleanJsonText(text);
 
   try {
-    const response = await fetch(OPENROUTER_URL, {
-      method: "POST",
-
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-
-        "HTTP-Referer":
-          process.env.SITE_URL ||
-          "https://careermitra.vercel.app",
-
-        "X-Title": "CareerMitra"
-      },
-
-      body: JSON.stringify({
-        model,
-
-        messages: [
-          {
-            role: "system",
-
-            content: webSearch
-              ? "You are CareerMitra's careful career research engine. Return valid JSON only when requested."
-              : "You are CareerMitra's Test Zone AI. Follow the requested JSON schema exactly. Return valid JSON only."
-          },
-
-          {
-            role: "user",
-            content: prompt
-          }
-        ],
-
-        temperature: 0.15,
-
-        max_tokens: webSearch
-          ? 3200
-          : 2200
-      }),
-
-      signal: controller.signal
-    });
-
-    const raw = await response.text();
-
-    let data = null;
-
-    try {
-      data = JSON.parse(raw);
-    } catch (_) {}
-
-    if (!response.ok) {
-      const error = new Error(
-        cleanText(
-          data?.error?.message ||
-          data?.error ||
-          `OpenRouter HTTP ${response.status}`
-        )
-      );
-
-      error.status = response.status;
-
-      throw error;
-    }
-
-    const text = extractText(data);
-
-    if (!text) {
-      throw new Error("AI returned an empty response.");
-    }
-
-    return text;
-
-  } finally {
-    clearTimeout(timer);
+    return JSON.parse(cleaned);
+  } catch (_) {
+    return null;
   }
 }
 
-async function callAI(prompt, webSearch = false) {
+function extractText(data) {
+  return (
+    data?.choices?.[0]?.message?.content ||
+    data?.choices?.[0]?.text ||
+    ""
+  );
+}
+
+function getErrorMessage(data, status) {
+  return (
+    data?.error?.message ||
+    data?.message ||
+    `OpenRouter request failed with status ${status}`
+  );
+}
+
+function isRetryable(status) {
+  return [
+    408,
+    409,
+    429,
+    500,
+    502,
+    503,
+    504
+  ].includes(status);
+}
+
+async function callOpenRouter({
+  apiKey,
+  model,
+  prompt,
+  temperature = 0.2,
+  maxTokens = 5000,
+  signal
+}) {
+  const body = {
+    model,
+    messages: [
+      {
+        role: "system",
+        content: DEFAULT_SYSTEM
+      },
+      {
+        role: "user",
+        content: prompt
+      }
+    ],
+    temperature,
+    max_tokens: maxTokens
+  };
+
+  const response = await fetch(OPENROUTER_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer":
+        process.env.APP_URL ||
+        process.env.VERCEL_URL ||
+        "https://careermitra.vercel.app",
+      "X-Title": "CareerMitra"
+    },
+    body: JSON.stringify(body),
+    signal
+  });
+
+  let data = {};
+
+  try {
+    data = await response.json();
+  } catch (_) {
+    data = {};
+  }
+
+  if (!response.ok) {
+    const error = new Error(
+      getErrorMessage(data, response.status)
+    );
+
+    error.status = response.status;
+    error.providerData = data;
+
+    throw error;
+  }
+
+  const text = extractText(data);
+
+  if (!text) {
+    const error = new Error("AI returned an empty response.");
+    error.status = 502;
+    throw error;
+  }
+
+  return {
+    text,
+    data
+  };
+}
+
+/*
+ * OpenRouter's free router can choose an available free model.
+ *
+ * We deliberately do NOT hammer the API with many retries.
+ * This is important for rate limits.
+ */
+async function runAI({
+  apiKey,
+  prompt,
+  temperature,
+  maxTokens,
+  requireJSON = false
+}) {
+  const models = [
+    PRIMARY_MODEL
+  ];
+
   let lastError = null;
 
-  // First model gets two chances.
-  // Backup models get one chance each.
-  for (let i = 0; i < MODELS.length; i++) {
+  for (let i = 0; i < models.length; i++) {
+    const model = models[i];
 
-    const attempts = i === 0 ? 2 : 1;
+    const controller = new AbortController();
 
-    for (let attempt = 0; attempt < attempts; attempt++) {
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, 50000);
 
-      try {
+    try {
+      const result = await callOpenRouter({
+        apiKey,
+        model,
+        prompt,
+        temperature,
+        maxTokens,
+        signal: controller.signal
+      });
 
-        const text = await requestModel(
-          MODELS[i],
-          prompt,
-          webSearch
-        );
+      clearTimeout(timeout);
 
-        if (text) {
-          return {
-            text,
-            model: MODELS[i]
-          };
-        }
+      if (!requireJSON) {
+        return {
+          ok: true,
+          ai: true,
+          model,
+          text: result.text
+        };
+      }
 
-      } catch (e) {
+      const parsed = parseJSON(result.text);
 
-        lastError = e;
+      if (!parsed) {
+        /*
+         * Do not make another expensive AI call just because
+         * JSON parsing failed.
+         */
+        return {
+          ok: false,
+          ai: true,
+          parseFailed: true,
+          model,
+          raw: result.text
+        };
+      }
 
-        console.error(
-          "CareerMitra AI attempt failed",
-          MODELS[i],
-          attempt + 1,
-          e?.message
-        );
+      return {
+        ok: true,
+        ai: true,
+        model,
+        data: parsed
+      };
+    } catch (error) {
+      clearTimeout(timeout);
 
-        if (
-          [429, 502, 503, 504].includes(e?.status) ||
-          e?.name === "AbortError"
-        ) {
-          await sleep(350);
-        }
+      lastError = error;
+
+      /*
+       * One short retry ONLY for transient infrastructure
+       * failures. This prevents runaway request consumption.
+       */
+      if (
+        isRetryable(error?.status) &&
+        i === models.length - 1
+      ) {
+        await sleep(350);
       }
     }
   }
 
-  throw lastError || new Error("All AI providers failed.");
+  return {
+    ok: false,
+    ai: false,
+    error: lastError?.message || "AI request failed",
+    status: lastError?.status || 500
+  };
 }
 
-function extractCareer(prompt) {
-  const p = cleanText(prompt);
+/* ---------------------------------------------------------
+   LIVE WEB RESEARCH
+--------------------------------------------------------- */
 
-  const patterns = [
-
-    /non[- ]negotiable(?: career)?\s*[:\-]\s*["“']?(.+?)["”']?(?:\n|$)/i,
-
-    /exact career\s*[:\-]\s*["“']?(.+?)["”']?(?:\n|$)/i,
-
-    /career\s+of\s+["“']?(.+?)["”']?(?:\s+in India|\n|$)/i,
-
-    /career\s*[:\-]\s*["“']?(.+?)["”']?(?:\n|$)/i
-
-  ];
-
-  for (const re of patterns) {
-
-    const m = p.match(re);
-
-    if (m?.[1]) {
-
-      return cleanText(m[1])
-        .replace(/[.,;]+$/, "");
-    }
-  }
-
-  return "";
-}
-
-function sourcePriority(url) {
-  const u = String(url || "").toLowerCase();
-
-  if (
-    u.includes(".gov.in") ||
-    u.includes(".gov")
-  ) {
-    return 100;
-  }
-
-  if (u.includes("linkedin.com")) {
-    return 65;
-  }
-
-  if (u.includes("indeed.com")) {
-    return 64;
-  }
-
-  if (u.includes("glassdoor")) {
-    return 60;
-  }
-
-  return 40;
-}
-
-async function searchWeb(query) {
-
+async function webSearch(query) {
   try {
+    const q = encodeURIComponent(query);
 
+    /*
+     * Bing RSS is used only as a lightweight public-source
+     * discovery mechanism.
+     */
     const url =
-      "https://www.bing.com/search?format=rss&q=" +
-      encodeURIComponent(query);
+      `https://www.bing.com/news/search?q=${q}&format=rss`;
 
     const response = await fetch(url, {
       headers: {
-        "User-Agent": "CareerMitra/1.0"
+        "User-Agent":
+          "Mozilla/5.0 CareerMitra/1.0"
       }
     });
 
@@ -298,470 +289,316 @@ async function searchWeb(query) {
 
     const xml = await response.text();
 
-    const items =
-      xml.match(/<item>[\s\S]*?<\/item>/gi) || [];
+    const items = [];
 
-    return items
-      .slice(0, 6)
-      .map(item => {
+    const matches = [
+      ...xml.matchAll(
+        /<item>([\s\S]*?)<\/item>/gi
+      )
+    ];
 
-        const title =
-          item.match(
-            /<title>([\s\S]*?)<\/title>/i
-          )?.[1] || "";
+    for (const match of matches.slice(0, 8)) {
+      const block = match[1];
 
-        const link =
-          item.match(
-            /<link>([\s\S]*?)<\/link>/i
-          )?.[1] || "";
+      const title =
+        block.match(/<title>([\s\S]*?)<\/title>/i)?.[1] ||
+        "";
 
-        const snippet =
-          item.match(
-            /<description>([\s\S]*?)<\/description>/i
-          )?.[1] || "";
+      const link =
+        block.match(/<link>([\s\S]*?)<\/link>/i)?.[1] ||
+        "";
 
-        return {
-          title: cleanText(title),
-          url: cleanText(link),
-          snippet: cleanText(snippet)
-        };
-      })
-      .filter(
-        x =>
-          x.title &&
-          /^https?:\/\//i.test(x.url)
-      );
+      const pubDate =
+        block.match(
+          /<pubDate>([\s\S]*?)<\/pubDate>/i
+        )?.[1] || "";
 
+      const clean = value =>
+        value
+          .replace(/<!\[CDATA\[|\]\]>/g, "")
+          .replace(/&amp;/g, "&")
+          .replace(/&quot;/g, '"')
+          .trim();
+
+      if (title && link) {
+        items.push({
+          title: clean(title),
+          url: clean(link),
+          date: clean(pubDate)
+        });
+      }
+    }
+
+    return items;
   } catch (_) {
-
     return [];
   }
 }
 
-function researchPrompt(career, evidence) {
+/* ---------------------------------------------------------
+   CAREER RESEARCH NORMALIZATION
+--------------------------------------------------------- */
 
-  return `
-You are CareerMitra's live career research engine.
-
-EXACT CAREER: ${career}
-
-WEB EVIDENCE:
-${evidence}
-
-Return ONLY valid JSON with EXACTLY these keys:
-
-{
-  "career":"",
-  "what_it_involves":"",
-  "pros":[],
-  "cons":[],
-  "pay_india":"",
-  "market_requirements":[],
-  "demand":"",
-  "future_growth":"",
-  "step_by_step_path":[],
-  "academic_education":[],
-  "vocational_diploma":[],
-  "certifications":[],
-  "job_ready_skills":[],
-  "alternatives":[],
-  "barriers":[],
-  "rewards":[],
-  "public_discussion_themes":[],
-  "student_fit":"",
-  "family_concerns_addressed":"",
-  "sources":[]
-}
-
-Rules:
-
-1. Keep the exact career name.
-2. Use India-focused information.
-3. Use web evidence for current claims.
-4. Stable career facts may use general professional knowledge.
-5. Never invent URLs.
-6. Salary information is indicative, not guaranteed.
-7. Discuss real market requirements.
-8. Discuss demand and future growth.
-9. Include academic routes.
-10. Include vocational and diploma routes.
-11. Include useful certifications.
-12. Include job-ready practical skills.
-13. Include realistic alternatives.
-14. Include barriers and challenges.
-15. Include rewards beyond salary.
-16. Include common public discussion themes.
-17. Explain student fit.
-18. Explain family concerns addressed.
-19. Return JSON only.
-`;
-}
-
-function normalizeResearch(
-  data,
-  career,
-  sources
-) {
-
+function normalizeResearch(data, career) {
   const d =
     data && typeof data === "object"
-      ? { ...data }
+      ? data
       : {};
 
-  d.career = career;
+  const arr = value =>
+    Array.isArray(value)
+      ? value.filter(Boolean)
+      : value
+      ? [String(value)]
+      : [];
 
-  const aliases = {
+  return {
+    career:
+      d.career ||
+      career,
 
-    what_it_involves: [
-      "role_description",
-      "description"
-    ],
+    what_it_involves:
+      d.what_it_involves ||
+      "Information about the day-to-day work and responsibilities of this career.",
 
-    pay_india: [
-      "earning_reality_india",
-      "salary"
-    ],
+    pros:
+      arr(d.pros),
 
-    market_requirements: [
-      "requirements",
-      "skills"
-    ],
+    cons:
+      arr(d.cons),
 
-    future_growth: [
-      "growth_future",
-      "future"
-    ],
+    pay_india:
+      d.pay_india ||
+      "Salary varies by role, experience, location and employer.",
 
-    step_by_step_path: [
-      "career_path",
-      "path"
-    ],
+    market_requirements:
+      d.market_requirements ||
+      "Requirements vary by employer and specialization.",
 
-    alternatives: [
-      "same_level_alternatives",
-      "alternatives"
-    ],
+    demand:
+      d.demand ||
+      "Demand depends on the specialization and current market conditions.",
 
-    barriers: [
-      "struggles_barriers",
-      "barriers"
-    ],
+    future_growth:
+      d.future_growth ||
+      "Future growth depends on technology, industry demand and specialization.",
 
-    rewards: [
-      "rewards_beyond_money",
-      "rewards"
-    ],
+    step_by_step_path:
+      arr(d.step_by_step_path),
 
-    public_discussion_themes: [
-      "anecdotal_reviews",
-      "public_discussion"
-    ]
+    academic_education:
+      arr(d.academic_education),
+
+    vocational_diploma:
+      arr(d.vocational_diploma),
+
+    certifications:
+      arr(d.certifications),
+
+    job_ready_skills:
+      arr(d.job_ready_skills),
+
+    alternatives:
+      arr(d.alternatives),
+
+    barriers:
+      arr(d.barriers),
+
+    rewards:
+      arr(d.rewards),
+
+    public_discussion_themes:
+      arr(d.public_discussion_themes),
+
+    sources:
+      arr(d.sources),
+
+    student_fit:
+      d.student_fit || "",
+
+    family_concerns_addressed:
+      arr(d.family_concerns_addressed)
   };
-
-  for (const [key, list] of Object.entries(aliases)) {
-
-    if (
-      d[key] == null ||
-      d[key] === ""
-    ) {
-
-      for (const alias of list) {
-
-        if (
-          d[alias] != null &&
-          d[alias] !== ""
-        ) {
-
-          d[key] = d[alias];
-
-          break;
-        }
-      }
-    }
-  }
-
-  const arrays = [
-
-    "pros",
-    "cons",
-    "market_requirements",
-    "step_by_step_path",
-    "academic_education",
-    "vocational_diploma",
-    "certifications",
-    "job_ready_skills",
-    "alternatives",
-    "barriers",
-    "rewards",
-    "public_discussion_themes"
-
-  ];
-
-  for (const key of arrays) {
-
-    if (!Array.isArray(d[key])) {
-
-      d[key] = d[key]
-        ? [String(d[key])]
-        : [];
-    }
-  }
-
-  if (
-    !Array.isArray(d.sources) ||
-    !d.sources.length
-  ) {
-
-    d.sources = sources;
-  }
-
-  if (!d.what_it_involves) {
-
-    d.what_it_involves =
-      `The ${career} role involves applying relevant knowledge and practical skills to solve problems and deliver useful outcomes.`;
-  }
-
-  if (!d.pay_india) {
-
-    d.pay_india =
-      "Pay varies by employer, location, specialization and experience.";
-  }
-
-  if (!d.demand) {
-
-    d.demand =
-      "Demand varies by specialization, employer and experience level.";
-  }
-
-  if (!d.future_growth) {
-
-    d.future_growth =
-      "The field continues to evolve, so continuous learning and specialization are important.";
-  }
-
-  return d;
 }
 
+/* ---------------------------------------------------------
+   MAIN HANDLER
+--------------------------------------------------------- */
+
 export default async function handler(req, res) {
+  /*
+   * CORS / basic response headers
+   */
+  res.setHeader(
+    "Cache-Control",
+    "no-store"
+  );
 
   if (req.method !== "POST") {
-
     return res.status(405).json({
       ok: false,
       error: "Method not allowed"
     });
   }
 
-  try {
+  const apiKey =
+    process.env.OPENROUTER_API_KEY;
 
-    const body =
-      typeof req.body === "string"
-        ? JSON.parse(req.body || "{}")
-        : (req.body || {});
-
-    const prompt =
-      cleanText(body.prompt);
-
-    const webSearch =
-      body.webSearch === true;
-
-    if (!prompt) {
-
-      return res.status(400).json({
-        ok: false,
-        error: "Missing prompt"
-      });
-    }
-
-    let finalPrompt = prompt;
-
-    let sources = [];
-
-    /*
-     * LIVE CAREER RESEARCH
-     */
-
-    if (webSearch) {
-
-      const career =
-        extractCareer(prompt);
-
-      if (!career) {
-
-        return res.status(400).json({
-          ok: false,
-          error:
-            "Could not determine the exact career."
-        });
-      }
-
-      const queries = [
-
-        `"${career}" India career`,
-
-        `"${career}" India qualifications education`,
-
-        `"${career}" India salary demand`,
-
-        `"${career}" India future jobs`
-
-      ];
-
-      const groups =
-        await Promise.all(
-          queries.map(searchWeb)
-        );
-
-      const seen = new Set();
-
-      sources =
-        groups
-          .flat()
-          .filter(x => {
-
-            if (
-              !x.url ||
-              seen.has(x.url)
-            ) {
-              return false;
-            }
-
-            seen.add(x.url);
-
-            return true;
-          })
-          .sort(
-            (a, b) =>
-              sourcePriority(b.url) -
-              sourcePriority(a.url)
-          )
-          .slice(0, 12);
-
-      const evidence =
-        sources
-          .map(
-            (x, i) =>
-              `[SOURCE ${i + 1}]
-${x.title}
-${x.url}
-${x.snippet}`
-          )
-          .join("\n\n");
-
-      finalPrompt =
-        researchPrompt(
-          career,
-          evidence ||
-            "No usable live source was retrieved."
-        );
-    }
-
-    /*
-     * CALL AI
-     */
-
-    let ai =
-      await callAI(
-        finalPrompt,
-        webSearch
-      );
-
-    let data =
-      parseJSON(ai.text);
-
-    /*
-     * JSON REPAIR
-     *
-     * Only used for live research if
-     * the first response isn't valid JSON.
-     */
-
-    if (
-      webSearch &&
-      !data
-    ) {
-
-      ai =
-        await callAI(
-          finalPrompt +
-            `
-
-FINAL CHECK:
-Return ONLY one valid JSON object.
-No markdown.
-No commentary.
-No explanation.
-`,
-          true
-        );
-
-      data =
-        parseJSON(ai.text);
-    }
-
-    /*
-     * NORMALIZE LIVE RESEARCH
-     */
-
-    if (webSearch) {
-
-      data =
-        normalizeResearch(
-          data,
-          extractCareer(prompt),
-          sources
-        );
-    }
-
-    /*
-     * SUCCESS
-     */
-
-    return res.status(200).json({
-
-      ok: true,
-
-      ai: true,
-
-      fallbackUsed: false,
-
-      data:
-        data || ai.text,
-
-      model:
-        ai.model,
-
-      sources
-    });
-
-  } catch (error) {
-
-    console.error(
-      "CareerMitra API ERROR",
-      error
-    );
-
-    /*
-     * IMPORTANT:
-     *
-     * We do NOT fake AI success here.
-     * Frontend can use its built-in fallback
-     * when this response is received.
-     */
-
-    return res.status(503).json({
-
+  if (!apiKey) {
+    return res.status(500).json({
       ok: false,
-
       aiFailed: true,
-
       fallbackAllowed: true,
-
       error:
-        cleanText(
-          error?.message ||
-          "AI service temporarily unavailable."
-        )
+        "OPENROUTER_API_KEY is missing from Vercel environment variables."
     });
   }
+
+  const body =
+    req.body && typeof req.body === "object"
+      ? req.body
+      : {};
+
+  const prompt =
+    typeof body.prompt === "string"
+      ? body.prompt.trim()
+      : "";
+
+  const webSearchRequested =
+    Boolean(body.webSearch);
+
+  const temperature =
+    typeof body.temperature === "number"
+      ? body.temperature
+      : 0.2;
+
+  const maxTokens =
+    Number(body.maxTokens) > 0
+      ? Math.min(Number(body.maxTokens), 10000)
+      : 5000;
+
+  const requireJSON =
+    body.requireJSON !== false;
+
+  if (!prompt) {
+    return res.status(400).json({
+      ok: false,
+      error: "Prompt is required."
+    });
+  }
+
+  /*
+   * Optional live research.
+   *
+   * We only perform this when the frontend explicitly
+   * requests webSearch.
+   */
+  let searchResults = [];
+
+  if (webSearchRequested) {
+    /*
+     * Extract a useful search phrase without making
+     * another AI request.
+     */
+    const careerMatch =
+      prompt.match(
+        /(?:career|non[- ]negotiable career)\s*[:\-]\s*([^\n]+)/i
+      );
+
+    const query =
+      careerMatch?.[1]?.trim() ||
+      prompt
+        .replace(/\s+/g, " ")
+        .slice(0, 180);
+
+    searchResults =
+      await webSearch(query);
+  }
+
+  let finalPrompt = prompt;
+
+  if (searchResults.length) {
+    finalPrompt += `
+
+LIVE PUBLIC WEB RESEARCH RESULTS
+
+Use these sources for current claims.
+Do not invent source URLs.
+
+${searchResults
+  .map(
+    (x, i) =>
+      `${i + 1}. ${x.title}
+URL: ${x.url}
+Date: ${x.date}`
+  )
+  .join("\n\n")}
+`;
+  }
+
+  /*
+   * Explicit instruction for structured outputs.
+   */
+  if (requireJSON) {
+    finalPrompt += `
+
+OUTPUT REQUIREMENT
+
+Return ONLY valid JSON.
+Do not use markdown.
+Do not wrap the JSON in \`\`\`.
+Do not add explanations before or after the JSON.
+`;
+  }
+
+  const result = await runAI({
+    apiKey,
+    prompt: finalPrompt,
+    temperature,
+    maxTokens,
+    requireJSON
+  });
+
+  /*
+   * SUCCESS
+   */
+  if (result.ok) {
+    return res.status(200).json({
+      ok: true,
+      ai: true,
+      fallbackUsed: false,
+      model: result.model,
+      data: requireJSON
+        ? result.data
+        : result.text,
+      sources:
+        searchResults.length
+          ? searchResults
+          : undefined
+    });
+  }
+
+  /*
+   * AI failed.
+   *
+   * IMPORTANT:
+   * We do not keep retrying here.
+   *
+   * The frontend can immediately activate its
+   * built-in fallback generator.
+   */
+  return res.status(503).json({
+    ok: false,
+    ai: false,
+    aiFailed: true,
+    fallbackAllowed: true,
+    status: result.status || 503,
+    error:
+      result.error ||
+      "AI service temporarily unavailable.",
+    sources:
+      searchResults.length
+        ? searchResults
+        : undefined
+  });
 }
