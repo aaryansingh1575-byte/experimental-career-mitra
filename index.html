@@ -588,39 +588,102 @@ PERSONAL VAULT:
 ${JSON.stringify(vault)}`;
 }
 async function makeQuestions(s){
-  const v=s.vault,vault={interests:v.interests,hobbies:v.hobbies,likings:v.likings,strongSubjects:arr(v.subjects).map(x=>`${x.name} (${LEVELS[x.level-1]||'Good'})`),preferredRolesInPriorityOrder:roleNames(v),verifiedSkills:arr(v.skills).map(x=>`${x.name} (${x.level||''})`),chosenField:v.field,reasonForField:v.whyField,reasonNotOtherFields:v.whyNotOthers,alternativesConsidered:v.alternatives};
+  const v=s.vault;
+  const vault={
+    interests:v.interests,
+    hobbies:v.hobbies,
+    likings:v.likings,
+    strongSubjects:arr(v.subjects).map(x=>`${x.name} (${LEVELS[x.level-1]||'Good'})`),
+    preferredRolesInPriorityOrder:roleNames(v),
+    verifiedSkills:arr(v.skills).map(x=>`${x.name} (${x.level||''})`),
+    chosenField:v.field,
+    reasonForField:v.whyField,
+    reasonNotOtherFields:v.whyNotOthers,
+    alternativesConsidered:v.alternatives
+  };
   const stage=STAGES[s.stage]?STAGES[s.stage].t+' — '+STAGES[s.stage].d:'student';
   S.tload=0;
-  const run=async([cat,n])=>{
-    for(let attempt=0;attempt<3;attempt++){
-      const q=validQuestions(await aiJson(batchPrompt(cat,n,vault,stage)),n);
-      if(q&&q.length===n&&(!VAULT_CATS.includes(cat)||usesVault(q,v)>=Math.ceil(n*0.6))){
-        q.forEach(x=>{x.cat=cat;if(!x.basedOn)x.basedOn=VAULT_CATS.includes(cat)?'Your vault':'AI-generated from your profile'});
-        S.tload++;if(S.tstate==='loading')render(true);return q;
-      }
-    }
-    S.tload++;if(S.tstate==='loading')render(true);
-    return null;
-  };
+  window.CM_TEST_AI_SOURCES={};
+
+  /* One AI request for the complete test instead of 3 retries per section.
+     This keeps Test Zone fast while still allowing section-level fallback. */
+  const planText=TQ_PLAN.map(([cat,n])=>`${cat}: ${n} questions`).join('\n');
+  const prompt=`You are CareerMitra's AI test generator.
+
+Create the COMPLETE ${TQ_N}-question personality and career-orientation test in ONE response.
+
+Student stage: ${stage}
+
+PERSONAL VAULT:
+${JSON.stringify(vault)}
+
+QUESTION PLAN:
+${planText}
+
+Rules:
+1. Generate exactly the requested number for every category.
+2. Return exactly ${TQ_N} questions total.
+3. Use the Personal Vault strongly for categories related to interests, likings, subjects, skills and career preferences.
+4. Personality and situation questions must be neutral and simple.
+5. Holland trait options must use R, I, A, S, E, C. Each personality-style question has 4 different trait letters.
+6. Basic intelligence questions have one correct answer using correct:true and no Holland trait.
+7. Do not use numeric scores or scoring language.
+8. Every question must be different.
+9. Keep wording short and student-friendly.
+10. Return ONLY this JSON shape:
+{"questions":[{"cat":"Personality","basedOn":"...","q":"...","o":[{"text":"...","trait":"R"}]}]}
+
+The cat value MUST exactly match one of:
+${TQ_PLAN.map(x=>x[0]).join(', ')}
+`;
+
+  let aiQuestions=null;
+  try{
+    const raw=await aiJson(prompt,{fast:true});
+    if(raw&&Array.isArray(raw.questions)) aiQuestions=raw.questions;
+  }catch(e){
+    window.CM_AI_ERROR=e&&e.message?e.message:String(e);
+  }
+
+  /* Validate each category independently. Failed categories use the existing
+     built-in generator, so one bad AI response never blocks the test. */
   const out={};
   const sources={};
-  window.CM_TEST_AI_SOURCES={};
-  const runWithFallback=async(planItem)=>{
-    const [cat,n]=planItem;
-    const aiResult=await run(planItem);
-    if(aiResult){
-      sources[cat]='ai'; window.CM_TEST_AI_SOURCES[cat]='ai'; return aiResult;
+
+  for(const [cat,n] of TQ_PLAN){
+    const candidates=Array.isArray(aiQuestions)
+      ? aiQuestions.filter(x=>x&&x.cat===cat)
+      : [];
+
+    let q=validQuestions({questions:candidates},n);
+
+    if(q&&q.length===n&&(!VAULT_CATS.includes(cat)||usesVault(q,v)>=Math.ceil(n*0.6))){
+      q.forEach(x=>{
+        x.cat=cat;
+        if(!x.basedOn)x.basedOn=VAULT_CATS.includes(cat)?'Your vault':'AI-generated from your profile';
+      });
+      out[cat]=q;
+      sources[cat]='ai';
+      window.CM_TEST_AI_SOURCES[cat]='ai';
+    }else{
+      const built=localCat(v,cat,n);
+      out[cat]=built;
+      sources[cat]='builtin';
+      window.CM_TEST_AI_SOURCES[cat]='builtin';
     }
-    const built=localCat(v,cat,n);
-    sources[cat]='builtin'; window.CM_TEST_AI_SOURCES[cat]='builtin';
-    return built;
-  };
-  out[TQ_PLAN[0][0]]=await runWithFallback(TQ_PLAN[0]);
-  const rest=TQ_PLAN.slice(1);
-  for(let i=0;i<rest.length;i+=3){await Promise.all(rest.slice(i,i+3).map(async item=>{out[item[0]]=await runWithFallback(item)}))}
-  const failed=TQ_PLAN.filter(([cat])=>!out[cat]||out[cat].length!==TQ_PLAN.find(x=>x[0]===cat)[1]).map(([cat])=>cat);
-  if(failed.length){window.CM_AI_ERROR=`Test Zone could not generate these sections: ${failed.join(', ')}`;return null;}
-  const q=TQ_PLAN.flatMap(([cat])=>out[cat]);
+
+    S.tload++;
+    if(S.tstate==='loading')render(true);
+  }
+
+  const q=TQ_PLAN.flatMap(([cat])=>out[cat]||[]);
+  const failed=TQ_PLAN.filter(([cat,n])=>!out[cat]||out[cat].length!==n).map(([cat])=>cat);
+
+  if(failed.length){
+    window.CM_AI_ERROR=`Test Zone could not generate: ${failed.join(', ')}`;
+    return null;
+  }
+
   const usedFallback=Object.values(sources).some(x=>x==='builtin');
   return{q,src:usedFallback?'mixed':'ai',sources};
 }
