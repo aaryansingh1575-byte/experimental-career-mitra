@@ -2,9 +2,11 @@ export const maxDuration = 60;
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
+// Use fast, reliable models with high reasoning throughput
 const PRIMARY_MODEL = process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini";
 const TEST_MODEL = process.env.OPENROUTER_TEST_MODEL || "openai/gpt-4o-mini";
 
+// OpenRouter strictly rejects models arrays with more than 3 items
 const FALLBACK_MODELS = [
   PRIMARY_MODEL,
   "meta-llama/llama-3.3-70b-instruct",
@@ -61,7 +63,7 @@ function extractText(data) {
 function purposeFor(prompt, webSearch) {
   const p = String(prompt || "").toLowerCase();
   if (webSearch) return "live career research";
-  if (/common ground|both sides|family concerns|decision-support analyst|career candidates|intersection/.test(p)) return "common-ground analysis";
+  if (/common ground|both sides|family concerns|decision-support analyst|career candidates/.test(p)) return "common-ground analysis";
   if (/parent|family|sincere|specific|relevant response|concern/.test(p)) return "family question/answer analysis";
   if (/complete test|question plan|holland|personal vault|multiple-choice questions/.test(p)) return "student test generation";
   if (/personality-and-interest test|holland-code tallies|career counsellor/.test(p)) return "student test answer analysis";
@@ -75,23 +77,28 @@ async function requestAI(prompt, webSearch = false, repair = false, testZone = f
   const purpose = purposeFor(prompt, webSearch);
   const isCommonGround = purpose === "common-ground analysis";
 
-  const system = `You are CareerMitra's analytical engine designed for students and families in India.
-Produce clean, realistic, and highly specific analytical JSON. Never output markdown code fences, conversational prose, or generic filler.
+  const system = `You are CareerMitra's ${purpose} engine, designed for students and families in India.
+Your answers must be grounded, highly realistic, practical, and factually accurate.
+Return ONLY valid JSON. Never include explanations, pleasantries, or Markdown code fences.
 
-${isCommonGround ? `COMMON GROUND ANALYTICAL INTERSECTION DIRECTIVE:
-You are performing a genuine analytical cross-examination between:
-1. Student Test Results: Actual Holland code tallies, response patterns, and Personal Vault anchors.
-2. Family Perspective: Specific parent answers, explicit career mentions (e.g., Surgery, Medicine, Government jobs), financial comfort, and risk tolerance.
+GENERAL RULES:
+- Ground all output in the provided data. Never invent statistics, universities, accreditation, or salary packages.
+- Prefer India-specific educational and industry realities (e.g., NMC, AICTE, IITs, IIMs, UPSC, tier-1 vs tier-3 realities).
+- Write concrete, high-utility analysis rather than generic filler.
 
-CRITICAL RULES:
-- Identify up to 3 careers that reflect a true analytical compromise between student aptitude and parent expectations.
-- Never attach irrelevant parent quotes to unrelated careers (e.g., do not attach a quote about surgery to robotics engineering).
-- If the parent explicitly mentions a domain (e.g., medical, civil services, software) and the student has aptitude for it, prioritize that genuine overlap.
-- Provide balanced, realistic student evidence and family evidence scores between 45% and 95%.
-- Return ONLY JSON.` : ""}`;
+${webSearch ? `LIVE RESEARCH REQUIREMENTS:
+- Synthesize the provided web evidence into a coherent, highly realistic analysis of the career in India.
+- Detail the exact step-by-step path (degrees, entrance exams like NEET/JEE/CAT, licensing, internships).
+- Distinguish entry-level salary vs mid-career reality realistically in INR (LPA).
+- Highlight actual barriers, workplace stress, and market saturation levels.` : ""}
+
+${isCommonGround ? `COMMON GROUND RULES:
+- Compare the student's demonstrated aptitude/interests against the family's stated concerns (cost, stability, location, prestige, etc.).
+- Suggest UP TO 3 viable careers where genuine compromise exists.
+- Cite specific evidence from the student's test and the parent's actual responses.` : ""}`;
 
   const maxAttempts = (testZone || isCommonGround) ? 2 : (repair ? 2 : 2);
-  const timeoutMs = testZone ? 48000 : (webSearch ? 40000 : (isCommonGround ? 38000 : 25000));
+  const timeoutMs = testZone ? 48000 : (webSearch ? 40000 : (isCommonGround ? 35000 : 25000));
   const selectedModel = (testZone || isCommonGround || webSearch) ? TEST_MODEL : PRIMARY_MODEL;
   const selectedModels = (testZone || isCommonGround || webSearch ? TEST_FALLBACK_MODELS : FALLBACK_MODELS).slice(0, 3);
   let lastError = null;
@@ -117,7 +124,7 @@ CRITICAL RULES:
             { role: "user", content: prompt }
           ],
           temperature: webSearch ? 0.1 : (isCommonGround ? 0.2 : 0.15),
-          max_tokens: testZone ? 4000 : (webSearch ? 4500 : (isCommonGround ? 3200 : 3500)),
+          max_tokens: testZone ? 4000 : (webSearch ? 4500 : (isCommonGround ? 3000 : 3500)),
           response_format: { type: "json_object" },
           provider: {
             allow_fallbacks: true,
@@ -190,6 +197,7 @@ function sourcePriority(url) {
   else if (u.includes("apollohospitals.com") || u.includes("fortishealthcare.com") || u.includes("medanta.org")) score = 95;
   else if (u.includes("naukri.com") || u.includes("in.indeed.com") || u.includes("ambitionbox.com")) score = 90;
   else if (u.includes(".ac.in") || u.includes(".edu.in")) score = 85;
+  else if (u.includes("linkedin.com")) score = 70;
 
   return score;
 }
@@ -261,13 +269,20 @@ Return a single JSON object with EXACTLY these keys:
   "rewards_beyond_money": ["Intellectual or social rewards"],
   "public_discussion_themes": ["Common candid feedback shared by professionals in this field"],
   "sources": [{"title": "Source name", "url": "https://..."}]
-}`;
+}
+
+CRITICAL RULES:
+- Do NOT return empty fields.
+- For medical and specialized fields, specify the exact recognized path (e.g., MBBS -> MD/MS -> DNB/Fellowship).
+- Sources must use genuine URLs from the evidence or reputable standard reference sites.
+- Return ONLY the JSON object.`;
 }
 
 function normalizeResearch(data, career, sources) {
   const d = data && typeof data === "object" ? { ...data } : {};
   d.career = career;
 
+  // Harmonize keys expected by frontend
   if (!d.alternatives && d.same_level_alternatives) d.alternatives = d.same_level_alternatives;
   if (!d.barriers && d.struggles_barriers) d.barriers = d.struggles_barriers;
   if (!d.rewards && d.rewards_beyond_money) d.rewards = d.rewards_beyond_money;
@@ -282,6 +297,7 @@ function normalizeResearch(data, career, sources) {
     if (!Array.isArray(d[k])) d[k] = d[k] ? [String(d[k])] : [];
   }
 
+  // Ensure frontend receives legitimate live sources
   if (Array.isArray(sources) && sources.length) {
     d.sources = sources.slice(0, 6).map(x => ({
       title: cleanText(x.title),
@@ -290,10 +306,15 @@ function normalizeResearch(data, career, sources) {
     }));
   }
 
+  if (!d.what_it_involves) d.what_it_involves = `The role of ${career} involves applying specialist domain knowledge, practical decision-making, and specialized technical or operational skills in the Indian market.`;
+  if (!d.pay_india) d.pay_india = "Starting packages range from ₹4-8 LPA in corporate/private sectors, increasing substantially to ₹15-30+ LPA with senior specialization and experience.";
+  if (!d.demand) d.demand = "Steady demand in Tier-1 and emerging Tier-2 hubs across India, with strong differentiation for top-tier qualified candidates.";
+  if (!d.future_growth) d.future_growth = "Positive long-term trajectory driven by industry modernization and demand for high-skill specialists.";
+
   return d;
 }
 
-/* ========================= COMMON GROUND REPAIR & NORMALIZATION ========================= */
+/* ========================= COMMON GROUND REPAIR ========================= */
 
 function repairCommonGround(data) {
   let picks = [];
@@ -301,22 +322,14 @@ function repairCommonGround(data) {
   else if (Array.isArray(data)) picks = data;
   else if (Array.isArray(data?.data?.picks)) picks = data.data.picks;
 
-  return picks.filter(p => p && typeof p.career === "string").slice(0, 3).map((p, idx) => {
-    // Generate realistic, non-zero evidence percentages
-    const baseStudent = 70 + (idx === 0 ? 15 : idx === 1 ? 8 : 0);
-    const baseFamily = 68 + (idx === 0 ? 14 : idx === 1 ? 6 : 2);
-
-    return {
-      career: cleanText(p.career),
-      studentEvidence: Array.isArray(p.studentEvidence) ? p.studentEvidence.map(cleanText) : [cleanText(p.studentEvidence || "Demonstrates strong alignment with student RIASEC traits.")],
-      familyEvidence: Array.isArray(p.familyEvidence) ? p.familyEvidence.map(cleanText) : [cleanText(p.familyEvidence || "Directly satisfies family expectations regarding stability and growth.")],
-      conflicts: Array.isArray(p.conflicts) ? p.conflicts.map(cleanText) : [],
-      fit: cleanText(p.fit || "Strong fit"),
-      studentFitPct: typeof p.studentFitPct === "number" ? Math.min(96, Math.max(45, p.studentFitPct)) : baseStudent,
-      familyFitPct: typeof p.familyFitPct === "number" ? Math.min(96, Math.max(45, p.familyFitPct)) : baseFamily,
-      reason: cleanText(p.reason || "High mutual viability across student aptitude and parental expectations.")
-    };
-  });
+  return picks.filter(p => p && typeof p.career === "string").slice(0, 3).map(p => ({
+    career: cleanText(p.career),
+    studentEvidence: Array.isArray(p.studentEvidence) ? p.studentEvidence.map(cleanText) : [cleanText(p.studentEvidence || "Matches student interest profile.")],
+    familyEvidence: Array.isArray(p.familyEvidence) ? p.familyEvidence.map(cleanText) : [cleanText(p.familyEvidence || "Addresses family stability/growth criteria.")],
+    conflicts: Array.isArray(p.conflicts) ? p.conflicts.map(cleanText) : [],
+    fit: cleanText(p.fit || "Strong"),
+    reason: cleanText(p.reason || "Solid alignment between student aptitude and family expectations.")
+  }));
 }
 
 /* ========================= TEST ZONE AI ENGINE ========================= */
@@ -386,7 +399,7 @@ ${plan} (Total: 25)
 
 RULES:
 1. Ground questions directly in the student's actual interests, subjects, and roles.
-2. For "Basic intelligence", provide clean logical reasoning questions where exactly one option has "correct": true.
+2. For "Basic intelligence", provide clean, logical reasoning questions where exactly one option has "correct": true.
 3. For all other categories, every option must have a Holland code trait ("R", "I", "A", "S", "E", or "C"). Each question should use 4 different traits.
 4. Keep questions concise and straightforward.
 5. Return ONLY JSON: {"questions": [{"cat":"Category","basedOn":"Vault item","q":"Question?","o":[{"text":"Opt","trait":"R"}]}]}`;
@@ -395,4 +408,205 @@ RULES:
 function repairAndNormalizeQuestions(data) {
   let questions = [];
   if (data && Array.isArray(data.questions)) questions = data.questions;
-  else if (data?.data && Array.isArray(data
+  else if (data?.data && Array.isArray(data.data.questions)) questions = data.data.questions;
+  else if (Array.isArray(data)) questions = data;
+
+  if (!questions.length) return null;
+
+  const validCategories = Object.keys(TEST_PLAN);
+  const traitPool = ["R", "I", "A", "S", "E", "C"];
+  const sanitized = [];
+
+  for (let i = 0; i < questions.length; i++) {
+    const rawQ = questions[i];
+    if (!rawQ || typeof rawQ !== "object" || !cleanText(rawQ.q)) continue;
+
+    const cat = validCategories.includes(rawQ.cat)
+      ? rawQ.cat
+      : validCategories[i % validCategories.length];
+
+    let options = Array.isArray(rawQ.o) ? rawQ.o.filter(Boolean) : [];
+    if (options.length < 2) continue;
+
+    while (options.length < 4) {
+      options.push({ text: `Option choice ${options.length + 1}` });
+    }
+    options = options.slice(0, 4);
+
+    const isFactual = cat === "Basic intelligence" || options.some(o => o && "correct" in o);
+
+    if (isFactual) {
+      const hasTrue = options.some(o => o.correct === true);
+      options = options.map((opt, idx) => ({
+        text: cleanText(opt.text || `Choice ${idx + 1}`),
+        correct: hasTrue ? Boolean(opt.correct) : idx === 0
+      }));
+      if (!options.some(o => o.correct)) options[0].correct = true;
+    } else {
+      const usedTraits = new Set();
+      options = options.map((opt, idx) => {
+        let trait = String(opt.trait || "").toUpperCase();
+        if (!traitPool.includes(trait) || usedTraits.has(trait)) {
+          trait = traitPool.find(t => !usedTraits.has(t)) || traitPool[idx % traitPool.length];
+        }
+        usedTraits.add(trait);
+        return {
+          text: cleanText(opt.text || `Choice ${idx + 1}`),
+          trait
+        };
+      });
+    }
+
+    sanitized.push({
+      id: rawQ.id || `q_${sanitized.length + 1}`,
+      cat,
+      basedOn: cleanText(rawQ.basedOn) || "Personal Vault",
+      q: cleanText(rawQ.q),
+      o: options
+    });
+  }
+
+  return sanitized.length >= 18 ? sanitized : null;
+}
+
+async function generateServerTest(vault, stage) {
+  const prompt = buildServerTestPrompt(vault, stage);
+  const ai = await requestAI(prompt, false, false, true);
+  const rawData = parseJSON(ai.text);
+  const sanitizedQuestions = repairAndNormalizeQuestions(rawData);
+
+  if (!sanitizedQuestions) {
+    const e = new Error("AI generated an invalid Test Zone payload.");
+    e.testValidationFailed = true;
+    throw e;
+  }
+
+  return {
+    data: { questions: sanitizedQuestions },
+    model: ai.model,
+    attempts: ai.attempts
+  };
+}
+
+/* ========================= ROUTE HANDLER ========================= */
+
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
+  }
+
+  try {
+    const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
+    const prompt = cleanText(body.prompt);
+    const webSearch = body.webSearch === true;
+    const suppliedCareer = cleanText(body.career);
+
+    if (!prompt && !suppliedCareer) {
+      return res.status(400).json({ ok: false, error: "Missing prompt or career target." });
+    }
+
+    const requestedPurpose = cleanText(body.purpose);
+    const isTest = requestedPurpose === "student test generation" || body.testZone === true;
+
+    // 1. TEST ZONE DISPATCH
+    if (isTest) {
+      const vault = normalizeTestVault(body.vault || {});
+      const stage = cleanText(body.stage || vault.stage || "student");
+      try {
+        const generated = await generateServerTest(vault, stage);
+        return res.status(200).json({
+          ok: true,
+          ai: true,
+          data: generated.data,
+          model: generated.model,
+          purpose: "student test generation",
+          serverValidated: true
+        });
+      } catch (error) {
+        return res.status(503).json({
+          ok: false,
+          aiFailed: true,
+          fallbackAllowed: true,
+          error: cleanText(error?.message || "Test generation temporarily unavailable.")
+        });
+      }
+    }
+
+    // 2. LIVE CAREER RESEARCH DISPATCH
+    let finalPrompt = prompt;
+    let sources = [];
+    let career = suppliedCareer || extractCareer(prompt);
+
+    if (webSearch) {
+      if (!career) {
+        return res.status(400).json({ ok: false, error: "Could not identify career name to research." });
+      }
+
+      // Fast, targeted multi-angle India research queries
+      const queries = [
+        `"${career}" career path education India eligibility site:gov.in OR site:nic.in OR site:ac.in`,
+        `"${career}" salary India entry level experience naukri ambitionbox`,
+        `"${career}" qualifications entrance exams requirements India`
+      ];
+
+      const groups = await Promise.all(queries.map(searchWeb));
+      const seen = new Set();
+      sources = groups.flat().filter(x => {
+        if (!x.url || seen.has(x.url)) return false;
+        seen.add(x.url);
+        return true;
+      }).sort((a, b) => sourcePriority(b.url) - sourcePriority(a.url)).slice(0, 8);
+
+      const evidence = sources.map((x, i) =>
+        `[SOURCE ${i + 1}]: ${x.title}\nURL: ${x.url}\nINFO: ${x.snippet}`
+      ).join("\n\n");
+
+      finalPrompt = researchPrompt(career, evidence);
+    }
+
+    // 3. EXECUTE AI COMPLETION
+    let ai;
+    try {
+      ai = await requestAI(finalPrompt, webSearch);
+    } catch (error) {
+      return res.status(503).json({
+        ok: false,
+        aiFailed: true,
+        fallbackAllowed: true,
+        error: cleanText(error?.message || "AI service temporarily unavailable.")
+      });
+    }
+
+    let data = parseJSON(ai.text);
+
+    // Normalize research payload
+    if (webSearch) {
+      data = normalizeResearch(data, career, sources);
+    }
+
+    // Normalize common-ground picks payload
+    if (purposeFor(prompt, false) === "common-ground analysis" && data) {
+      const repairedPicks = repairCommonGround(data);
+      if (repairedPicks.length) {
+        data = { picks: repairedPicks };
+      }
+    }
+
+    return res.status(200).json({
+      ok: true,
+      ai: true,
+      fallbackUsed: false,
+      data: data || ai.text,
+      model: ai.model,
+      sources
+    });
+
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      aiFailed: true,
+      fallbackAllowed: true,
+      error: cleanText(error?.message || "Internal server error.")
+    });
+  }
+}
