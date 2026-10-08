@@ -3,8 +3,6 @@ export const maxDuration = 60;
 const OPENROUTER_URL =
   "https://openrouter.ai/api/v1/chat/completions";
 
-// Primary model. Can be overridden from Vercel:
-// OPENROUTER_MODEL
 const PRIMARY_MODEL =
   process.env.OPENROUTER_MODEL ||
   "nvidia/nemotron-3-ultra-550b-a55b:free";
@@ -72,7 +70,8 @@ function parseJSON(text) {
 }
 
 function extractText(data) {
-  const c = data?.choices?.[0];
+  const c =
+    data?.choices?.[0];
 
   if (
     typeof c?.message?.content ===
@@ -127,7 +126,7 @@ function purposeFor(
     /parent|family|sincere|specific|relevant response|concern/
       .test(p)
   ) {
-    return "family question and answer analysis";
+    return "family question/answer analysis";
   }
 
   if (
@@ -154,7 +153,8 @@ function purposeFor(
 
 async function requestAI(
   prompt,
-  webSearch = false
+  webSearch = false,
+  repair = false
 ) {
   const key =
     process.env.OPENROUTER_API_KEY;
@@ -174,56 +174,103 @@ async function requestAI(
   const system = `
 You are CareerMitra's ${purpose} engine.
 
-Return ONLY the JSON requested by the user.
+Your job is to produce a HIGH-QUALITY,
+useful result for a real student.
 
-Do not add:
-- markdown fences
-- commentary
-- disclaimers
-- invented evidence
+RETURN ONLY VALID JSON.
 
-For analysis tasks:
-- use the supplied student/family data strictly
-- do not invent personal information
-- do not invent family concerns
-- do not invent student preferences
-- do not silently replace the student's non-negotiable career
+Never return:
+- markdown
+- code fences
+- commentary outside JSON
+- explanations outside JSON
 
-For live research:
-- keep the exact career
-- use supplied web evidence for current claims
-- focus on India
-- never invent URLs
-- never invent salaries
-- never invent qualifications
-- never invent market statistics
+GENERAL RULES:
 
-If evidence is insufficient,
-say that in the JSON instead of guessing.
+1. Use supplied student/family information exactly.
+2. Never invent personal facts.
+3. For live career research, keep the EXACT career.
+4. Never replace a specialization with a broader career.
+5. Never invent:
+   - source URLs
+   - salary numbers
+   - qualifications
+   - regulations
+   - statistics
+   - demand claims
+6. Prefer India-specific information.
+7. Give concrete information instead of filler.
+8. If evidence is weak, explain the limitation clearly.
+9. Do not silently omit important requested sections.
+
+${
+  webSearch
+    ? `
+LIVE RESEARCH RULES:
+
+- Use the web evidence supplied by CareerMitra.
+- Cross-check important claims whenever possible.
+- Prefer:
+  * Indian government sources
+  * NMC
+  * NBEMS/NBME
+  * MCC
+  * AIIMS
+  * Indian universities
+  * established Indian hospitals
+  * reputable Indian job portals
+- Never treat one job listing as proof of national demand.
+- Never treat search-result count as market size.
+- Salary must include experience/location/employer context.
+- For medical careers distinguish:
+  * undergraduate education
+  * registration
+  * postgraduate specialty training
+  * advanced fellowship/subspecialty training
+- If the career is a specialist/subspecialist career,
+  explain the actual pathway instead of giving generic advice.
+`
+    : ""
+}
+
+${
+  repair
+    ? `
+RECOVERY PASS:
+
+The previous AI response was incomplete,
+malformed, or missing important sections.
+
+Rebuild the COMPLETE JSON.
+
+Do NOT shorten the answer.
+Do NOT omit sections.
+Use the original evidence and request.
+`
+    : ""
+}
 `;
 
   /*
-   * AI IS THE PRIMARY PATH.
+   * OpenRouter handles model/provider failover.
    *
-   * We deliberately give AI several attempts.
-   * Fallback is only reached after these attempts fail.
+   * We intentionally DO NOT repeatedly hammer 429.
+   * Account-level rate limits cannot be fixed by
+   * repeatedly sending the same request.
    */
-  const MAX_ATTEMPTS = 3;
 
-  /*
-   * Keep each request bounded so Vercel's
-   * function does not hang forever.
-   */
+  const maxAttempts = 2;
+
   const timeoutMs =
     webSearch
-      ? 14500
-      : 11000;
+      ? 18000
+      : 12000;
 
   let lastError = null;
 
   for (
     let attempt = 1;
-    attempt <= MAX_ATTEMPTS;
+    attempt <= maxAttempts;
     attempt++
   ) {
     const controller =
@@ -263,10 +310,6 @@ say that in the JSON instead of guessing.
                 model:
                   PRIMARY_MODEL,
 
-                /*
-                 * OpenRouter can choose another
-                 * model if the first is unavailable.
-                 */
                 models:
                   FALLBACK_MODELS,
 
@@ -285,12 +328,12 @@ say that in the JSON instead of guessing.
 
                 temperature:
                   webSearch
-                    ? 0.1
-                    : 0.2,
+                    ? 0.05
+                    : 0.15,
 
                 max_tokens:
                   webSearch
-                    ? 5000
+                    ? 6500
                     : 6000,
 
                 provider: {
@@ -335,6 +378,11 @@ say that in the JSON instead of guessing.
             "retry-after"
           ) || null;
 
+        error.providerCode =
+          data?.error?.metadata
+            ?.provider_code ||
+          null;
+
         throw error;
       }
 
@@ -349,6 +397,7 @@ say that in the JSON instead of guessing.
 
       return {
         text,
+
         model:
           data?.model ||
           PRIMARY_MODEL,
@@ -366,13 +415,23 @@ say that in the JSON instead of guessing.
           error?.status || 0
         );
 
-      const transient =
+      /*
+       * DO NOT retry 429 immediately.
+       * If the account is rate limited,
+       * another immediate request usually
+       * does not solve it.
+       */
+
+      if (status === 429) {
+        break;
+      }
+
+      const retryable =
         !status ||
         [
           408,
           409,
           425,
-          429,
           500,
           502,
           503,
@@ -381,20 +440,13 @@ say that in the JSON instead of guessing.
 
       if (
         attempt <
-          MAX_ATTEMPTS &&
-        transient
+          maxAttempts &&
+        retryable
       ) {
-        /*
-         * Small bounded backoff.
-         *
-         * We intentionally don't wait for
-         * the complete provider Retry-After
-         * because Vercel has a finite runtime.
-         */
         const wait =
           Math.min(
-            900,
-            250 * attempt
+            1200,
+            350 * attempt
           );
 
         await new Promise(
@@ -425,7 +477,7 @@ say that in the JSON instead of guessing.
 
 
 /* =========================================================
-   EXACT CAREER EXTRACTION
+   CAREER EXTRACTION
 ========================================================= */
 
 function extractCareer(
@@ -491,117 +543,84 @@ function sourcePriority(
   let score = 20;
 
   if (
-    u.includes(
-      "nmc.org.in"
-    )
-  ) {
+    u.includes("nmc.org.in")
+  )
     score = 120;
 
-  } else if (
-    u.includes(
-      "natboard.edu.in"
-    )
-  ) {
+  else if (
+    u.includes("natboard.edu.in")
+  )
     score = 118;
 
-  } else if (
-    u.includes(
-      "nbe.edu.in"
-    )
-  ) {
+  else if (
+    u.includes("nbe.edu.in")
+  )
     score = 118;
 
-  } else if (
-    u.includes(
-      "mcc.nic.in"
-    )
-  ) {
+  else if (
+    u.includes("mcc.nic.in")
+  )
     score = 116;
 
-  } else if (
-    u.includes(
-      "aiimsexams.ac.in"
-    )
-  ) {
+  else if (
+    u.includes("aiimsexams.ac.in")
+  )
     score = 114;
 
-  } else if (
-    u.includes(
-      "aiims.edu"
-    )
-  ) {
+  else if (
+    u.includes("aiims.edu")
+  )
     score = 112;
 
-  } else if (
-    u.includes(
-      ".gov.in"
-    )
-  ) {
+  else if (
+    u.includes(".gov.in")
+  )
     score = 100;
 
-  } else if (
-    u.includes(
-      "apollohospitals.com"
-    )
-  ) {
-    score = 95;
-
-  } else if (
-    u.includes(
-      "fortishealthcare.com"
-    )
-  ) {
-    score = 93;
-
-  } else if (
-    u.includes(
-      "maxhealthcare.in"
-    )
-  ) {
-    score = 93;
-
-  } else if (
-    u.includes(
-      "medanta.org"
-    )
-  ) {
-    score = 93;
-
-  } else if (
-    u.includes(
-      "in.indeed.com"
-    )
-  ) {
-    score = 88;
-
-  } else if (
-    u.includes(
-      "naukri.com"
-    )
-  ) {
-    score = 82;
-
-  } else if (
-    u.includes(
-      ".ac.in"
-    )
-  ) {
+  else if (
+    u.includes(".ac.in")
+  )
     score = 90;
 
-  } else if (
-    u.includes(
-      "linkedin.com"
-    )
-  ) {
+  else if (
+    u.includes("apollohospitals.com")
+  )
+    score = 95;
+
+  else if (
+    u.includes("fortishealthcare.com")
+  )
+    score = 93;
+
+  else if (
+    u.includes("maxhealthcare.in")
+  )
+    score = 93;
+
+  else if (
+    u.includes("medanta.org")
+  )
+    score = 93;
+
+  else if (
+    u.includes("in.indeed.com")
+  )
+    score = 88;
+
+  else if (
+    u.includes("naukri.com")
+  )
+    score = 82;
+
+  else if (
+    u.includes("linkedin.com")
+  )
     score = 70;
 
-  } else if (
-    u.includes(
-      "who.int"
-    )
-  ) {
+  else if (
+    u.includes("who.int")
+  )
     score = 65;
-  }
 
   return score;
 }
@@ -646,6 +665,7 @@ async function searchWeb(
     return items
       .slice(0, 10)
       .map(item => {
+
         const title =
           item.match(
             /<title>([\s\S]*?)<\/title>/i
@@ -720,112 +740,186 @@ function researchPrompt(
   evidence
 ) {
   return `
-You are CareerMitra's LIVE career research engine
-for an Indian student.
+You are CareerMitra's senior
+India-focused career research analyst.
 
-EXACT CAREER:
+EXACT CAREER TO RESEARCH:
 ${career}
 
-COUNTRY:
-INDIA
+DO NOT CHANGE THIS CAREER.
 
-CURRENT WEB EVIDENCE:
+If the input contains a specialization,
+that specialization MUST remain central.
+
+COUNTRY:
+India
+
+LIVE WEB EVIDENCE:
 ${evidence ||
 "No usable live source was retrieved."}
 
-Return ONLY valid JSON.
+Return ONLY ONE valid JSON object.
 
-Required structure:
+Use exactly these keys:
 
 {
-  "career":"exact researched career name",
-
-  "what_it_involves":
-  "what the role actually does",
-
+  "career":"",
+  "what_it_involves":"",
   "pros":[],
-
   "cons":[],
-
-  "pay_india":
-  "realistic current India earning/pay picture with context",
-
+  "pay_india":"",
   "market_requirements":[],
-
-  "demand":
-  "current demand with evidence/context",
-
-  "future_growth":
-  "growth, changes, opportunities and uncertainties",
-
+  "demand":"",
+  "future_growth":"",
   "step_by_step_path":[],
-
   "academic_education":[],
-
   "vocational_diploma":[],
-
   "certifications":[],
-
   "job_ready_skills":[],
-
   "alternatives":[],
-
   "barriers":[],
-
   "rewards":[],
-
   "public_discussion_themes":[],
-
   "student_fit":"",
-
   "family_concerns_addressed":[],
-
   "sources":[]
 }
 
-STRICT RULES:
+QUALITY REQUIREMENTS:
 
-1. Keep the EXACT career.
+1. EXACT CAREER
 
-2. Never silently replace it with:
-   - a broader career
-   - a similar career
-   - another specialization
-   - an alternative career
+Do not substitute a nearby career.
 
-3. India-focused information is mandatory.
+Example:
 
-4. Use current web evidence for:
-   - salary
-   - demand
-   - market
-   - current requirements
-   - current trends
+If career =
+"orthopedic surgeon with spine speciality"
 
-5. Stable educational/role information
-   may use reliable professional knowledge.
+then keep spine specialization
+central throughout the response.
 
-6. NEVER invent URLs.
+Do NOT turn it into:
+- generic doctor
+- generic surgeon
+- generic orthopedic surgeon
 
-7. NEVER invent salary figures.
+2. INDIA FIRST
 
-8. Salary must be presented as indicative
-   and dependent on experience, location,
-   employer and specialization.
+Prefer:
 
-9. Public discussion themes are anecdotal.
-   Never present them as survey statistics.
+- NMC
+- NBEMS
+- MCC
+- AIIMS
+- Indian government sources
+- Indian universities
+- established Indian hospitals
+- reputable India job portals
 
-10. If evidence is insufficient,
-    explicitly say so.
+3. MEDICAL PATHWAY
 
-11. Do not put raw search-result titles
-    into unrelated sections.
+Where applicable explain separately:
 
-12. Synthesize the evidence into useful
-    career information.
+MBBS
+↓
+Registration/internship
+↓
+Relevant postgraduate specialty
+↓
+Advanced spine/subspecialty training
+↓
+Practice / further specialization
 
-13. Return JSON ONLY.
+Do NOT claim a fellowship is legally mandatory
+unless the evidence actually supports that claim.
+
+4. PAY
+
+Never invent precise salary.
+
+If reliable evidence exists:
+explain approximate range/context.
+
+Mention:
+- experience
+- city
+- employer
+- government/private
+- practice type
+
+5. DEMAND
+
+Do NOT say:
+
+"Very high demand"
+
+just because some jobs exist.
+
+Explain:
+- what evidence exists
+- what evidence does not exist
+- location/employer differences
+
+6. MARKET REQUIREMENTS
+
+Give actual:
+
+- education
+- qualifications
+- registration
+- skills
+- experience
+- employer expectations
+
+7. PATH
+
+Give a practical student-friendly
+step-by-step pathway.
+
+8. ALTERNATIVES
+
+Give genuinely comparable alternatives.
+
+Do NOT give random lower-level jobs.
+
+9. PUBLIC DISCUSSION
+
+Summarize recurring discussion themes.
+
+Do NOT present forums as statistical evidence.
+
+10. SOURCES
+
+Only use URLs contained in
+the supplied evidence.
+
+NEVER manufacture URLs.
+
+11. COMPLETENESS
+
+Do not leave major fields empty.
+
+Use reliable professional knowledge
+for stable facts.
+
+Clearly mark things that could not
+be verified from current evidence.
+
+12. NO FILLER
+
+Do not write generic filler such as:
+
+"opportunities should be evaluated"
+
+when the evidence can provide
+a more useful answer.
+
+13. JSON ONLY.
+
+No markdown.
+No explanation.
+No code fences.
 `;
 }
 
@@ -959,11 +1053,46 @@ function normalizeResearch(
     }
   }
 
+  /*
+   * VERY IMPORTANT:
+   *
+   * Never trust URLs invented by the AI.
+   * Only expose URLs actually retrieved
+   * by CareerMitra's live search.
+   */
+
   if (
-    !d.sources.length
+    Array.isArray(
+      sources
+    ) &&
+    sources.length
   ) {
     d.sources =
-      sources;
+      sources.map(
+        x => ({
+          title:
+            cleanText(
+              x.title
+            ),
+
+          url:
+            cleanText(
+              x.url
+            ),
+
+          snippet:
+            cleanText(
+              x.snippet
+            ),
+
+          why_relevant:
+            "Live source retrieved for this exact career research."
+        })
+      );
+  } else if (
+    !d.sources.length
+  ) {
+    d.sources = [];
   }
 
   if (
@@ -999,7 +1128,7 @@ function normalizeResearch(
 
 
 /* =========================================================
-   WORST-CASE LIVE RESEARCH FALLBACK
+   WORST-CASE FALLBACK
 ========================================================= */
 
 function webFallbackResearch(
@@ -1013,91 +1142,253 @@ function webFallbackResearch(
     );
 
   const sourceList =
-    usable.map(x => ({
-      title:
-        x.title,
+    usable.map(
+      x => ({
+        title:
+          x.title,
 
-      url:
-        x.url,
+        url:
+          x.url,
 
-      snippet:
-        x.snippet
-    }));
+        snippet:
+          x.snippet,
 
-  const indiaSources =
-    usable.filter(x => {
-      const u =
-        x.url.toLowerCase();
+        why_relevant:
+          "Retrieved as live evidence for this exact career in India."
+      })
+    );
 
-      return /nmc.org.in|natboard.edu.in|aiimsexams.ac.in|\.gov.in|apollohospitals.com|fortishealthcare.com|medanta.org|in\.indeed.com|naukri.com/
-        .test(u);
-    });
-
-  const snippets =
+  const text =
     usable
       .map(
         x =>
-          x.snippet
+          `${x.title} ${x.snippet}`
       )
-      .filter(Boolean);
+      .join(" ");
+
+  const medical =
+    /surgeon|doctor|physician|orthopedic|orthopaedic|cardio|neuro|radiolog|dermatolog|anesthes|anaesthes|patholog|pediatric|paediatric|oncolog|dentist/i
+      .test(
+        career
+      );
+
+  const spine =
+    /spine|spinal/i.test(
+      career
+    );
+
+  /*
+   * THIS IS LAST RESORT ONLY.
+   *
+   * It should never pretend to be AI.
+   */
+
+  const path =
+    medical
+      ? [
+          "Complete the required undergraduate medical education pathway in India, typically MBBS for a medical specialist career.",
+
+          "Complete the applicable internship and registration requirements under the current Indian regulatory framework.",
+
+          "Enter the relevant postgraduate specialty pathway through the currently applicable entrance and counselling process.",
+
+          spine
+            ? "After orthopaedic specialty training, build advanced spine expertise through appropriate supervised training or fellowship where applicable."
+            : "Build supervised specialist clinical and procedural experience.",
+
+          "Continue professional development, evidence-based practice and applicable registration or credential requirements."
+        ]
+      : [
+          `Build the academic foundation required for ${career}.`,
+
+          "Complete the relevant higher education or professional training pathway.",
+
+          "Build practical skills through projects, supervised work or internships where applicable.",
+
+          "Add relevant certifications only when they are genuinely valued for the target role.",
+
+          "Gain experience and continue skill development as the market changes."
+        ];
+
+  const education =
+    medical
+      ? [
+          "Medical undergraduate education is the foundation for the specialist pathway.",
+
+          "Postgraduate specialty training is normally required for specialist medical practice.",
+
+          spine
+            ? "Advanced spine-focused training may be pursued after the core orthopaedic pathway; exact requirements vary by institution and should be checked against current rules."
+            : "The exact specialty qualification should be verified against current NMC/NBEMS and institution-specific requirements."
+        ]
+      : [
+          "The required academic qualification depends on the exact role and employer.",
+
+          "Current course, university and employer requirements should be checked before choosing a programme."
+        ];
+
+  const requirements =
+    usable
+      .slice(0, 8)
+      .map(
+        x =>
+          `${x.title}${x.snippet ? ` — ${x.snippet}` : ""}`
+      );
+
+  const hasSalaryEvidence =
+    /salary|lakh|lpa|₹|rs\.?\s?\d|inr/i
+      .test(
+        text
+      );
+
+  const hasTrainingEvidence =
+    /mbbs|ms |dnb|fellowship|registration|nmc|nbems|residency/i
+      .test(
+        text
+      );
 
   return normalizeResearch(
     {
       career,
 
       what_it_involves:
-        `The exact career is ${career}. Current India-focused sources were retrieved, but AI synthesis was temporarily unavailable.`,
+        medical
+          ? `${career} is a specialist medical career involving patient assessment, diagnosis, treatment planning, procedures or surgery where applicable, follow-up and continued professional learning. The exact scope depends on specialist training and practice setting.`
+          : `${career} involves applying the knowledge and practical skills specific to the role, working with relevant tools or systems, solving real problems and delivering outcomes for an employer or client.`,
 
-      pros: [
-        "Career-specific opportunities should be evaluated from the verified sources.",
-        "Specialisation can create opportunities to build domain expertise."
-      ],
+      pros:
+        medical
+          ? [
+              "High level of specialised professional responsibility.",
+              "Potential to make a direct impact on patient outcomes.",
+              "Scope to build deep expertise and, depending on the career, teaching, research or private-practice opportunities."
+            ]
+          : [
+              "Opportunity to develop specialised expertise.",
+              "Potential for multiple employer or industry pathways as experience grows.",
+              "Scope for continued learning and progression."
+            ],
 
-      cons: [
-        "The exact current trade-offs could not be safely synthesized because AI analysis was unavailable."
-      ],
+      cons:
+        medical
+          ? [
+              "Long and demanding training pathway.",
+              "High responsibility and the need for continuous skill development.",
+              "Workload, location, employer and practice setting can strongly affect lifestyle."
+            ]
+          : [
+              "Competition and entry requirements vary by employer.",
+              "Skills need to be updated as the field changes.",
+              "Early-career outcomes can vary significantly by location and employer."
+            ],
 
       pay_india:
-        snippets.length
-          ? "Current India source evidence was retrieved, but no salary figure is shown because the AI could not safely reconcile differences between experience, employer and location."
-          : "No reliable current India salary evidence was retrieved.",
+        hasSalaryEvidence
+          ? "The live results contain salary or earning references, but they should be interpreted by experience, city, employer and practice type. Exact figures are not asserted here without a reliable cross-source salary dataset."
+          : "No sufficiently reliable current India salary range was established from the retrieved sources; salary varies substantially by experience, location, employer and practice type.",
 
       market_requirements:
-        indiaSources
-          .slice(0, 6)
-          .map(
-            x =>
-              `${x.title}${x.snippet ? ` — ${x.snippet}` : ""}`
-          ),
+        requirements,
 
       demand:
-        `Current India-focused results were retrieved for ${career}. Demand varies by location, employer, experience and specialization.`,
+        usable.length
+          ? `Live India search results were found for ${career}. They show current activity around the career, but search-result volume alone is not a national demand statistic. Demand should be interpreted with location, employer, experience and specialization in mind.`
+          : `No usable live India sources were retrieved for ${career}.`,
 
       future_growth:
-        "Current source evidence is available below, but an unsupported future forecast is not generated.",
+        medical
+          ? "The long-term outlook depends on population healthcare needs, specialist capacity, technology, referral patterns and the balance between public and private healthcare. Current growth should be treated as an evidence-based judgement rather than a guaranteed outcome."
+          : "Future growth depends on industry demand, technology, employer needs and the ability to keep skills current.",
 
-      step_by_step_path: [],
+      step_by_step_path:
+        path,
 
-      academic_education: [],
+      academic_education:
+        education,
 
-      vocational_diploma: [],
+      vocational_diploma:
+        medical
+          ? []
+          : [
+              "Diploma or vocational routes may be relevant only if they are explicitly accepted for the target role."
+            ],
 
-      certifications: [],
+      certifications:
+        medical
+          ? [
+              "Current registration and specialist qualification requirements should be verified with the applicable Indian authority.",
 
-      job_ready_skills: [],
+              hasTrainingEvidence
+                ? "The retrieved sources contain training or qualification references; verify the exact current pathway before making an education decision."
+                : "No specific certification claim is made because the retrieved evidence was insufficient."
+            ]
+          : [
+              "Choose certifications that are explicitly relevant to the target job rather than collecting certificates without practical experience."
+            ],
 
-      alternatives: [],
+      job_ready_skills:
+        medical
+          ? [
+              "Clinical assessment and decision-making",
+              "Relevant procedural or surgical skills under appropriate supervision",
+              "Patient and family communication",
+              "Imaging or diagnostic interpretation where relevant",
+              "Evidence-based practice",
+              "Teamwork and multidisciplinary coordination"
+            ]
+          : [
+              "Role-specific technical skills",
+              "Communication",
+              "Problem solving",
+              "Practical project or work evidence",
+              "Interview and workplace skills"
+            ],
 
-      barriers: [],
+      alternatives:
+        medical
+          ? [
+              "Related specialist pathways within the same broad medical field",
+              "Academic, teaching or research pathways after specialist training",
+              "Hospital-based clinical roles with adjacent expertise"
+            ]
+          : [],
 
-      rewards: [],
+      barriers:
+        medical
+          ? [
+              "Long education and training timeline",
+              "Competitive entry into specialist training",
+              "High professional responsibility",
+              "Need for continuous learning and credential maintenance"
+            ]
+          : [
+              "Competition for entry-level roles",
+              "Need for demonstrable practical skills",
+              "Changing technology and employer expectations"
+            ],
 
-      public_discussion_themes: [],
+      rewards:
+        medical
+          ? [
+              "Specialist expertise",
+              "Potential to improve patient outcomes",
+              "Professional growth and teaching or research opportunities",
+              "Potential to develop a specialised practice"
+            ]
+          : [
+              "Expertise and professional growth",
+              "Potential for progression into higher-responsibility roles",
+              "Opportunity to work across different organisations or industries"
+            ],
+
+      public_discussion_themes:
+        [],
 
       student_fit:
-        "AI synthesis was unavailable, so no unsupported student-fit claim is made.",
+        "Student-specific fit cannot be safely inferred from career research alone. CareerMitra should combine this research with the student's Test Zone and Personal Vault data.",
 
-      family_concerns_addressed: [],
+      family_concerns_addressed:
+        [],
 
       sources:
         sourceList
@@ -1105,6 +1396,63 @@ function webFallbackResearch(
     },
     career,
     sourceList
+  );
+}
+
+
+/* =========================================================
+   RESEARCH QUALITY CHECK
+========================================================= */
+
+function researchNeedsRepair(
+  data
+) {
+  if (
+    !data ||
+    typeof data !==
+      "object"
+  ) {
+    return true;
+  }
+
+  const required = [
+    "career",
+    "what_it_involves",
+    "pros",
+    "cons",
+    "pay_india",
+    "market_requirements",
+    "demand",
+    "future_growth",
+    "step_by_step_path",
+    "academic_education",
+    "job_ready_skills",
+    "alternatives",
+    "barriers",
+    "rewards",
+    "sources"
+  ];
+
+  const missing =
+    required.filter(
+      k =>
+        data[k] == null ||
+        data[k] === "" ||
+        (
+          Array.isArray(
+            data[k]
+          ) &&
+          data[k].length === 0
+        )
+    );
+
+  /*
+   * A response missing many sections
+   * is considered incomplete.
+   */
+
+  return (
+    missing.length >= 4
   );
 }
 
@@ -1179,11 +1527,12 @@ export default async function handler(
 
 
     /* =====================================================
-       LIVE WEB RESEARCH
+       LIVE CAREER RESEARCH
     ===================================================== */
 
-    if (webSearch) {
-
+    if (
+      webSearch
+    ) {
       if (!career) {
         return res.status(
           400
@@ -1193,10 +1542,6 @@ export default async function handler(
             "Could not determine the exact career."
         });
       }
-
-      /*
-       * Multiple India-focused searches.
-       */
 
       const queries = [
 
@@ -1214,7 +1559,15 @@ export default async function handler(
 
         `"${career}" India professional association fellowship`,
 
-        `"${career}" India day to day responsibilities`
+        `"${career}" India day to day responsibilities`,
+
+        `"${career}" India hospital specialist department`,
+
+        `"${career}" India training pathway career requirements`,
+
+        `"${career}" India salary experience private hospital government hospital`,
+
+        `${career} India current clinical practice patient treatment specialization`
       ];
 
       const groups =
@@ -1231,43 +1584,46 @@ export default async function handler(
        * Remove obvious foreign local-service
        * results.
        */
+
       const badCountry =
         /melbourne|florida|australia|canada|united states|new york|california|uk orthopedic surgeon jobs/i;
 
       sources =
         groups
           .flat()
-          .filter(x => {
+          .filter(
+            x => {
 
-            if (
-              !x.url ||
-              seen.has(
+              if (
+                !x.url ||
+                seen.has(
+                  x.url
+                )
+              ) {
+                return false;
+              }
+
+              const combined =
+                `${x.title} ${x.snippet}`;
+
+              if (
+                badCountry.test(
+                  combined
+                ) &&
+                !/india|indian/i.test(
+                  combined
+                )
+              ) {
+                return false;
+              }
+
+              seen.add(
                 x.url
-              )
-            ) {
-              return false;
+              );
+
+              return true;
             }
-
-            const combined =
-              `${x.title} ${x.snippet}`;
-
-            if (
-              badCountry.test(
-                combined
-              ) &&
-              !/india|indian/i.test(
-                combined
-              )
-            ) {
-              return false;
-            }
-
-            seen.add(
-              x.url
-            );
-
-            return true;
-          })
+          )
           .sort(
             (a, b) =>
               sourcePriority(
@@ -1304,13 +1660,15 @@ SNIPPET: ${x.snippet}`
 
 
     /* =====================================================
-       AI
+       PRIMARY AI REQUEST
     ===================================================== */
 
     let ai;
 
-    try {
+    let usedFallback =
+      false;
 
+    try {
       ai =
         await requestAI(
           finalPrompt,
@@ -1327,13 +1685,9 @@ SNIPPET: ${x.snippet}`
       );
 
       /*
-       * IMPORTANT:
-       *
-       * Fallback is ONLY reached after
-       * all AI attempts fail.
-       *
-       * For live research we still preserve
-       * the live source evidence.
+       * ONLY AFTER THE AI CHAIN FAILS
+       * do we activate the source-backed
+       * emergency fallback.
        */
 
       if (
@@ -1376,7 +1730,7 @@ SNIPPET: ${x.snippet}`
           sources,
 
           warning:
-            "All AI recovery attempts failed. Worst-case fallback activated."
+            "Source-backed recovery was used only after the AI recovery chain failed."
         });
       }
 
@@ -1426,7 +1780,7 @@ SNIPPET: ${x.snippet}`
 
 
     /* =====================================================
-       LIVE RESEARCH
+       AI RECOVERY PASS
     ===================================================== */
 
     if (
@@ -1434,29 +1788,120 @@ SNIPPET: ${x.snippet}`
     ) {
 
       /*
-       * AI succeeded but returned malformed JSON.
+       * AI succeeded at HTTP level,
+       * but may have returned malformed/
+       * incomplete JSON.
        *
-       * We don't make this look like an AI result.
-       * Since all AI attempts already completed,
-       * worst-case fallback is used.
+       * DO NOT immediately use fallback.
+       *
+       * Give AI another dedicated repair pass.
        */
 
-      data =
-        data
-          ? normalizeResearch(
-              data,
-              career,
-              sources
-            )
-          : webFallbackResearch(
-              career,
-              sources
+      if (
+        !data ||
+        researchNeedsRepair(
+          data
+        )
+      ) {
+
+        try {
+
+          const repairPrompt =
+            `${finalPrompt}
+
+RECOVERY INSTRUCTION:
+
+The previous response was incomplete or malformed.
+
+Rebuild the COMPLETE JSON object now.
+
+Every major section must contain useful,
+career-specific information grounded in
+the supplied evidence.
+
+Do NOT omit sections merely because
+one source is weak.
+
+Do NOT replace the exact career.
+
+Return JSON ONLY.`;
+
+          const repaired =
+            await requestAI(
+              repairPrompt,
+              true,
+              true
             );
+
+          const repairedData =
+            parseJSON(
+              repaired.text
+            );
+
+          if (
+            repairedData &&
+            !researchNeedsRepair(
+              repairedData
+            )
+          ) {
+            data =
+              repairedData;
+
+            ai =
+              repaired;
+          }
+
+        } catch (
+          repairError
+        ) {
+
+          console.error(
+            "CareerMitra AI research repair failed",
+            repairError
+          );
+        }
+      }
+
+
+      /* ===================================================
+         FINAL NORMALIZATION
+      =================================================== */
+
+      if (
+        data
+      ) {
+
+        data =
+          normalizeResearch(
+            data,
+            career,
+            sources
+          );
+
+      } else {
+
+        /*
+         * TRUE LAST RESORT.
+         *
+         * This is the only place where
+         * deterministic research fallback
+         * is allowed after AI failure.
+         */
+
+        data =
+          webFallbackResearch(
+            career,
+            sources
+          );
+
+        usedFallback =
+          true;
+      }
     }
 
 
     /* =====================================================
-       SUCCESS
+       RESPONSE
     ===================================================== */
 
     return res.status(
@@ -1464,10 +1909,11 @@ SNIPPET: ${x.snippet}`
     ).json({
       ok: true,
 
-      ai: true,
+      ai:
+        !usedFallback,
 
       fallbackUsed:
-        false,
+        usedFallback,
 
       data:
         data ||
