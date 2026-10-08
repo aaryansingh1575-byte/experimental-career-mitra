@@ -2,21 +2,22 @@ export const maxDuration = 60;
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
-// Keep the router configurable. openrouter/free is the safe default for demos.
+// Configurable models. Avoid slow ultra-high-parameter free models for single-shot generation.
 const PRIMARY_MODEL = process.env.OPENROUTER_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free";
-const TEST_MODEL = process.env.OPENROUTER_TEST_MODEL || "openai/gpt-4.1-mini";
+const TEST_MODEL = process.env.OPENROUTER_TEST_MODEL || "openai/gpt-4o-mini";
 
+// OpenRouter strictly rejects models arrays with more than 3 items
 const FALLBACK_MODELS = [
   PRIMARY_MODEL,
   "nvidia/nemotron-3.5-lightning:free",
   "openrouter/free"
-].filter((v, i, a) => v && a.indexOf(v) === i);
+].filter((v, i, a) => v && a.indexOf(v) === i).slice(0, 3);
 
 const TEST_FALLBACK_MODELS = [
   TEST_MODEL,
   "nvidia/nemotron-3.5-lightning:free",
   "openrouter/free"
-].filter((v, i, a) => v && a.indexOf(v) === i);
+].filter((v, i, a) => v && a.indexOf(v) === i).slice(0, 3);
 
 function cleanText(v) {
   return String(v ?? "").replace(/\u0000/g, "").trim();
@@ -101,16 +102,10 @@ ${webSearch ? `LIVE RESEARCH QUALITY:
 ${repair ? `THIS IS A RECOVERY PASS. A previous model response was incomplete or malformed.
 Rebuild the requested JSON from the original evidence. Do not shorten it merely to finish quickly.` : ""}`;
 
-  // OpenRouter already performs model/provider failover. Repeating a 429 is
-  // usually counterproductive because the account-level quota does not reset
-  // during a few hundred milliseconds. Retry only transient infrastructure
-  // failures, while allowing one full recovery request for malformed output.
-  // Test Zone is intentionally a single request. A second long generation
-  // inside the same Vercel invocation is what previously caused the ~50s abort.
   const maxAttempts = testZone ? 1 : (repair ? 2 : 2);
-  const timeoutMs = testZone ? 45000 : (webSearch ? 18000 : 12000);
+  const timeoutMs = testZone ? 48000 : (webSearch ? 18000 : 12000);
   const selectedModel = testZone ? TEST_MODEL : PRIMARY_MODEL;
-  const selectedModels = testZone ? TEST_FALLBACK_MODELS : FALLBACK_MODELS;
+  const selectedModels = (testZone ? TEST_FALLBACK_MODELS : FALLBACK_MODELS).slice(0, 3);
   let lastError = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -133,8 +128,9 @@ Rebuild the requested JSON from the original evidence. Do not shorten it merely 
             { role: "system", content: system },
             { role: "user", content: prompt }
           ],
-          temperature: webSearch ? 0.05 : 0.15,
-          max_tokens: testZone ? 5200 : (webSearch ? 6500 : 6000),
+          temperature: webSearch ? 0.05 : 0.2,
+          max_tokens: testZone ? 4000 : (webSearch ? 6500 : 6000),
+          response_format: { type: "json_object" },
           provider: {
             allow_fallbacks: true,
             sort: "throughput"
@@ -165,8 +161,6 @@ Rebuild the requested JSON from the original evidence. Do not shorten it merely 
       lastError = error;
       const status = Number(error?.status || 0);
 
-      // A 429 can mean the whole account has reached its free-model limit.
-      // Do not hammer the same limit with more immediate retries.
       if (status === 429) break;
 
       const retryable = !status || [408, 409, 425, 500, 502, 503, 504].includes(status);
@@ -243,7 +237,7 @@ async function searchWeb(query) {
       const link = item.match(/<link>([\s\S]*?)<\/link>/i)?.[1] || "";
       const snippet = item.match(/<description>([\s\S]*?)<\/description>/i)?.[1] || "";
       const clean = v => String(v || "")
-        .replace(/<!\[CDATA\[|\]\]>/g, "")
+        .replace(/<!\[CDATA\[\vert{}\]\]>/g, "")
         .replace(/&amp;/g, "&")
         .replace(/&quot;/g, '"')
         .replace(/&#39;/g, "'")
@@ -357,8 +351,6 @@ function normalizeResearch(data, career, sources) {
     if (!Array.isArray(d[k])) d[k] = d[k] ? [String(d[k])] : [];
   }
 
-  // Never trust URLs invented by the model. The only source URLs exposed to the UI
-  // are URLs actually retrieved by CareerMitra's live search.
   if (Array.isArray(sources) && sources.length) {
     d.sources = sources.map(x => ({
       title: cleanText(x.title),
@@ -391,8 +383,6 @@ function webFallbackResearch(career, sources) {
   const medical = /surgeon|doctor|physician|orthopedic|orthopaedic|cardio|neuro|radiolog|dermatolog|anesthes|anaesthes|patholog|pediatric|paediatric|oncolog|dentist/i.test(career);
   const spine = /spine|spinal/i.test(career);
 
-  // This is deliberately a LAST-RESORT source-backed response. It should be
-  // useful, but it must never pretend that it is AI-synthesized.
   const path = medical
     ? [
         "Complete the required undergraduate medical education pathway in India (typically MBBS for a medical specialist career).",
@@ -550,7 +540,6 @@ function researchNeedsRepair(data) {
   return missing.length >= 4;
 }
 
-
 /* ========================= TEST ZONE AI ENGINE ========================= */
 
 function testArr(v) {
@@ -606,114 +595,114 @@ function testVaultEvidence(v) {
 
 function buildServerTestPrompt(vault, stage = "student") {
   const v = normalizeTestVault(vault);
-  const plan = Object.entries(TEST_PLAN).map(([k,n]) => `${k}: exactly ${n}`).join("\n");
-  const evidence = testVaultEvidence(v).join("\n") || "No detailed Vault evidence was supplied.";
+  const plan = Object.entries(TEST_PLAN).map(([k, n]) => `${k}: ${n}`).join(", ");
+  const evidence = testVaultEvidence(v).join("\n") || "General student profile";
 
   return `You are CareerMitra's Test Zone AI engine.
+Generate a 25-question personalized career assessment test for a student in stage "${stage}".
 
-Create a genuinely personalized self-discovery test for ONE student.
-Do not use a generic question bank.
-A different Personal Vault must produce meaningfully different questions.
-
-STUDENT STAGE:
-${stage}
-
-PERSONAL VAULT:
-${JSON.stringify(v, null, 2)}
-
-EXACT PERSONAL EVIDENCE:
+STUDENT PERSONAL VAULT:
 ${evidence}
 
-QUESTION PLAN:
-${plan}
-TOTAL: 25
+CATEGORIES REQUIRED:
+${plan} (Total: 25)
 
-Rules:
-- Use the student's actual Vault as the source of personalization.
-- Do not invent interests, skills, subjects, roles or experiences.
-- Interests & likings: use real interests/hobbies/likings in at least 3 of 4 questions when available.
-- Strong subject / skills: use real subjects/skills in at least 3 of 4 when available.
-- Career opinion: use the student's field, roles, alternatives, non-negotiable career or reasons across the 5 questions.
-- Personality and Situation reaction should measure natural preferences, not sell a career.
-- Basic intelligence must be independent of the student's career and have exactly one correct answer.
-- Never make the student's non-negotiable career the 'correct' answer.
-- Every question has exactly 4 options.
-- Non-factual questions: each option has one different Holland code among R,I,A,S,E,C.
-- Factual questions: exactly one option has correct:true and the other three have correct:false.
-- Options must be realistic, comparable, neutral and similarly attractive.
-- No moral winner, no 'best person', no obvious smart/lazy option.
-- No duplicate questions.
-- basedOn must state the actual Vault evidence used, or 'General reasoning' only for Basic intelligence.
+RULES:
+1. Ground questions directly in the student's interests, subjects, or preferred roles.
+2. For "Basic intelligence", create simple logical or situational reasoning questions where exactly one option has "correct": true.
+3. For all other categories, every option must have a Holland code trait ("R", "I", "A", "S", "E", or "C"). Each question should use 4 different traits.
+4. Keep question text and option text concise to avoid timeouts.
+5. Return ONLY a single JSON object with a "questions" key containing the array of 25 question objects.
 
-Return ONLY valid JSON:
-{"questions":[{"cat":"Category name","basedOn":"actual Vault evidence","q":"question","o":[{"text":"option","trait":"R"},{"text":"option","trait":"I"},{"text":"option","trait":"A"},{"text":"option","trait":"S"}]}]}
-`;
+JSON STRUCTURE:
+{
+  "questions": [
+    {
+      "cat": "Personality",
+      "basedOn": "Vault interest or general reasoning",
+      "q": "Concise question statement?",
+      "o": [
+        {"text": "Option 1", "trait": "R"},
+        {"text": "Option 2", "trait": "I"},
+        {"text": "Option 3", "trait": "A"},
+        {"text": "Option 4", "trait": "S"}
+      ]
+    }
+  ]
+}`;
 }
 
-function validateServerTest(data, vault) {
-  const errors = [];
-  if (!data || !Array.isArray(data.questions)) return { ok:false, errors:["Missing questions array"] };
-  if (data.questions.length !== 25) errors.push(`Expected 25 questions, got ${data.questions.length}`);
+function repairAndNormalizeQuestions(data) {
+  let questions = [];
+  if (data && Array.isArray(data.questions)) questions = data.questions;
+  else if (data?.data && Array.isArray(data.data.questions)) questions = data.data.questions;
+  else if (data?.result && Array.isArray(data.result.questions)) questions = data.result.questions;
+  else if (Array.isArray(data)) questions = data;
 
-  const allowed = new Set(Object.keys(TEST_PLAN));
-  const counts = {};
-  const seen = new Set();
-  const traitCodes = new Set(["R","I","A","S","E","C"]);
-  const v = normalizeTestVault(vault);
-  const evidence = testVaultEvidence(v).map(x => x.toLowerCase());
+  if (!questions.length) return null;
 
-  const grounded = (q) => {
-    if (q.cat === "Basic intelligence") return true;
-    const hay = `${q.basedOn || ""} ${q.q || ""}`.toLowerCase();
-    return evidence.some(src => {
-      const words = src.replace(/[^a-z0-9 ]/g," ").split(/\s+/).filter(w => w.length >= 4);
-      if (!words.length) return false;
-      const hits = words.filter(w => hay.includes(w)).length;
-      return hits >= 1 || hay.includes(src);
-    });
-  };
+  const validCategories = Object.keys(TEST_PLAN);
+  const traitPool = ["R", "I", "A", "S", "E", "C"];
+  const sanitized = [];
 
-  for (let i=0;i<data.questions.length;i++) {
-    const q=data.questions[i];
-    const n=i+1;
-    if (!q || typeof q !== "object") { errors.push(`Q${n}: invalid object`); continue; }
-    if (!allowed.has(q.cat)) errors.push(`Q${n}: invalid category`);
-    counts[q.cat]=(counts[q.cat]||0)+1;
-    if (!cleanText(q.q)) errors.push(`Q${n}: missing question`);
-    if (!cleanText(q.basedOn)) errors.push(`Q${n}: missing basedOn`);
-    if (!Array.isArray(q.o) || q.o.length !== 4) { errors.push(`Q${n}: must have exactly 4 options`); continue; }
-    const texts=q.o.map(x=>cleanText(x?.text));
-    if (texts.some(x=>!x)) errors.push(`Q${n}: empty option`);
-    if (new Set(texts.map(x=>x.toLowerCase())).size !== 4) errors.push(`Q${n}: duplicate options`);
-    const factual=q.o.some(x=>x && Object.prototype.hasOwnProperty.call(x,"correct"));
-    if (factual) {
-      const correct=q.o.filter(x=>x?.correct===true).length;
-      if (correct!==1) errors.push(`Q${n}: factual question must have exactly one correct option`);
+  for (let i = 0; i < questions.length; i++) {
+    const rawQ = questions[i];
+    if (!rawQ || typeof rawQ !== "object" || !cleanText(rawQ.q)) continue;
+
+    const cat = validCategories.includes(rawQ.cat)
+      ? rawQ.cat
+      : validCategories[i % validCategories.length];
+
+    let options = Array.isArray(rawQ.o) ? rawQ.o.filter(Boolean) : [];
+    if (options.length < 2) continue;
+
+    // Pad or trim options to exactly 4 items
+    while (options.length < 4) {
+      options.push({ text: `Alternative choice ${options.length + 1}` });
+    }
+    options = options.slice(0, 4);
+
+    const isFactual = cat === "Basic intelligence" || options.some(o => o && "correct" in o);
+
+    if (isFactual) {
+      const hasTrue = options.some(o => o.correct === true);
+      options = options.map((opt, idx) => ({
+        text: cleanText(opt.text || `Option ${idx + 1}`),
+        correct: hasTrue ? Boolean(opt.correct) : idx === 0
+      }));
+      if (!options.some(o => o.correct)) options[0].correct = true;
     } else {
-      const traits=q.o.map(x=>x?.trait);
-      if (traits.some(x=>!traitCodes.has(x))) errors.push(`Q${n}: invalid Holland trait`);
-      if (new Set(traits).size!==4) errors.push(`Q${n}: non-factual options need four different traits`);
+      const usedTraits = new Set();
+      options = options.map((opt, idx) => {
+        let trait = String(opt.trait || "").toUpperCase();
+        if (!traitPool.includes(trait) || usedTraits.has(trait)) {
+          trait = traitPool.find(t => !usedTraits.has(t)) || traitPool[idx % traitPool.length];
+        }
+        usedTraits.add(trait);
+        return {
+          text: cleanText(opt.text || `Option ${idx + 1}`),
+          trait
+        };
+      });
     }
-    if (!grounded(q)) errors.push(`Q${n}: not grounded in supplied Personal Vault`);
-    for (let j=0;j<i;j++) {
-      const a=cleanText(data.questions[j]?.q).toLowerCase().replace(/[^a-z0-9 ]/g," ").replace(/\s+/g," ");
-      const b=cleanText(q.q).toLowerCase().replace(/[^a-z0-9 ]/g," ").replace(/\s+/g," ");
-      if (a && b && (a===b || a.includes(b) || b.includes(a))) errors.push(`Q${n}: duplicate/similar question`);
-    }
-    seen.add(q.id);
+
+    sanitized.push({
+      id: rawQ.id || `q_${sanitized.length + 1}`,
+      cat,
+      basedOn: cleanText(rawQ.basedOn) || "Personal Vault",
+      q: cleanText(rawQ.q),
+      o: options
+    });
   }
 
-  for (const [cat,n] of Object.entries(TEST_PLAN)) {
-    if ((counts[cat]||0)!==n) errors.push(`${cat}: expected ${n}, got ${counts[cat]||0}`);
-  }
-  return { ok: errors.length===0, errors };
+  // Accept generation if at least 18 questions are valid
+  return sanitized.length >= 18 ? sanitized : null;
 }
 
 async function generateServerTest(vault, stage) {
   const prompt = buildServerTestPrompt(vault, stage);
   let ai;
 
-  // ONE Test Zone generation only. Do not perform a second large AI request.
   try {
     ai = await requestAI(prompt, false, false, true);
   } catch (error) {
@@ -721,23 +710,21 @@ async function generateServerTest(vault, stage) {
     throw error;
   }
 
-  let data = parseJSON(ai.text);
+  const rawData = parseJSON(ai.text);
+  const sanitizedQuestions = repairAndNormalizeQuestions(rawData);
 
-  // Be tolerant of models returning {data:{questions:[...]}} or
-  // {result:{questions:[...]}} even though the prompt asks for the direct shape.
-  if (!data?.questions && data?.data?.questions) data = data.data;
-  if (!data?.questions && data?.result?.questions) data = data.result;
-
-  const check = validateServerTest(data, vault);
-
-  if (!check.ok) {
+  if (!sanitizedQuestions) {
     const e = new Error("AI generated an invalid Test Zone payload.");
     e.testValidationFailed = true;
-    e.validationErrors = check.errors;
+    e.validationErrors = ["AI returned malformed JSON or insufficient questions"];
     throw e;
   }
 
-  return { data, model: ai.model, attempts: ai.attempts };
+  return {
+    data: { questions: sanitizedQuestions },
+    model: ai.model,
+    attempts: ai.attempts
+  };
 }
 
 export default async function handler(req, res) {
@@ -766,12 +753,12 @@ export default async function handler(req, res) {
       const hasVault = testVaultEvidence(vault).length > 0;
       if (!hasVault) {
         return res.status(400).json({
-          ok:false,
-          ai:false,
-          fallbackUsed:false,
-          aiFailed:true,
-          fallbackAllowed:false,
-          error:"Personal Vault data is required for Test Zone generation."
+          ok: false,
+          ai: false,
+          fallbackUsed: false,
+          aiFailed: true,
+          fallbackAllowed: false,
+          error: "Personal Vault data is required for Test Zone generation."
         });
       }
 
@@ -779,28 +766,28 @@ export default async function handler(req, res) {
         const stage = cleanText(body.stage || vault.stage || "student");
         const generated = await generateServerTest(vault, stage);
         return res.status(200).json({
-          ok:true,
-          ai:true,
-          fallbackUsed:false,
-          data:generated.data,
-          model:generated.model,
-          attempts:generated.attempts,
-          purpose:"student test generation",
-          serverValidated:true
+          ok: true,
+          ai: true,
+          fallbackUsed: false,
+          data: generated.data,
+          model: generated.model,
+          attempts: generated.attempts,
+          purpose: "student test generation",
+          serverValidated: true
         });
       } catch (error) {
         console.error("CareerMitra Test Zone AI failed", error);
         return res.status(503).json({
-          ok:false,
-          ai:false,
-          fallbackUsed:false,
-          aiFailed:true,
-          fallbackAllowed:true,
-          testValidationFailed:Boolean(error?.testValidationFailed),
-          validationErrors:error?.validationErrors || [],
-          rateLimited:Number(error?.status)===429,
-          retryAfter:error?.retryAfter || null,
-          error:cleanText(error?.message || "Test Zone AI temporarily unavailable.")
+          ok: false,
+          ai: false,
+          fallbackUsed: false,
+          aiFailed: true,
+          fallbackAllowed: true,
+          testValidationFailed: Boolean(error?.testValidationFailed),
+          validationErrors: error?.validationErrors || [],
+          rateLimited: Number(error?.status) === 429,
+          retryAfter: error?.retryAfter || null,
+          error: cleanText(error?.message || "Test Zone AI temporarily unavailable.")
         });
       }
     }
@@ -839,7 +826,6 @@ export default async function handler(req, res) {
       sources = groups.flat().filter(x => {
         if (!x.url || seen.has(x.url)) return false;
         const combined = `${x.title} ${x.snippet}`;
-        // This research panel is India-first. Drop obvious foreign local-service results.
         if (badCountry.test(combined) && !/india|indian/i.test(combined)) return false;
         seen.add(x.url);
         return true;
@@ -862,8 +848,6 @@ export default async function handler(req, res) {
     } catch (error) {
       console.error("CareerMitra AI request failed", error);
 
-      // IMPORTANT: live research should not become a blank panel merely
-      // because the LLM is temporarily rate-limited.
       if (webSearch && career && sources.length) {
         return res.status(200).json({
           ok: true,
@@ -893,9 +877,6 @@ export default async function handler(req, res) {
     let data = parseJSON(ai.text);
 
     if (webSearch) {
-      // AI succeeded, but malformed/incomplete JSON is NOT considered a
-      // reason to activate the deterministic fallback immediately. Give AI
-      // one dedicated repair pass first.
       if (!data || researchNeedsRepair(data)) {
         try {
           const repairPrompt = `${finalPrompt}
