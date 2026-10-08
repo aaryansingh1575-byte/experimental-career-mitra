@@ -1,19 +1,30 @@
 // api/ai.js
+// CareerMitra AI Backend
+// AI-FIRST Test Zone
+// Vercel Serverless Function
 
 export const maxDuration = 60;
 
 const OPENROUTER_URL =
   "https://openrouter.ai/api/v1/chat/completions";
 
-const MODELS = [
+const PRIMARY_MODEL =
   process.env.OPENROUTER_MODEL ||
-    "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "nvidia/nemotron-3-ultra-550b-a55b:free";
+
+const TEST_MODEL =
+  process.env.OPENROUTER_TEST_MODEL ||
+  PRIMARY_MODEL;
+
+const FALLBACK_MODELS = [
+  TEST_MODEL,
+  PRIMARY_MODEL,
   "nvidia/nemotron-3.5-lightning:free",
   "nvidia/nemotron-3-super-120b-a12b:free",
   "openrouter/free"
-].filter((m, i, a) => m && a.indexOf(m) === i);
+].filter((v, i, a) => v && a.indexOf(v) === i);
 
-const RETRYABLE = new Set([
+const RETRYABLE_STATUS = new Set([
   408,
   409,
   425,
@@ -24,744 +35,764 @@ const RETRYABLE = new Set([
   504
 ]);
 
-const sleep = ms =>
-  new Promise(resolve => setTimeout(resolve, ms));
 
-function extractText(data) {
-  if (!data) return "";
+// ============================================================
+// BASIC HELPERS
+// ============================================================
 
-  if (
-    typeof data.output_text === "string" &&
-    data.output_text.trim()
-  ) {
-    return data.output_text.trim();
-  }
-
-  const content =
-    data?.choices?.[0]?.message?.content;
-
-  if (typeof content === "string") {
-    return content.trim();
-  }
-
-  if (Array.isArray(content)) {
-    return content
-      .map(x =>
-        typeof x === "string"
-          ? x
-          : x?.text || ""
-      )
-      .join("")
-      .trim();
-  }
-
-  return "";
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function parseJSON(text) {
-  if (!text) return null;
+function clean(value) {
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-  try {
-    return JSON.parse(text);
-  } catch {}
-
-  const fenced = text.match(
-    /```(?:json)?\s*([\s\S]*?)```/i
-  );
-
-  if (fenced) {
-    try {
-      return JSON.parse(
-        fenced[1].trim()
-      );
-    } catch {}
+function arr(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map(clean)
+      .filter(Boolean);
   }
 
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
+  if (typeof value === "string") {
+    return value
+      .split(/[,;\n]/)
+      .map(clean)
+      .filter(Boolean);
+  }
 
-  if (start !== -1 && end > start) {
+  return [];
+}
+
+function unique(list) {
+  return [...new Set(
+    (list || [])
+      .map(clean)
+      .filter(Boolean)
+  )];
+}
+
+function safeJsonParse(text) {
+  if (!text) return null;
+
+  let raw = String(text).trim();
+
+  raw = raw
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  try {
+    return JSON.parse(raw);
+  } catch {}
+
+  const first = raw.indexOf("{");
+  const last = raw.lastIndexOf("}");
+
+  if (first >= 0 && last > first) {
     try {
-      return JSON.parse(
-        text.slice(start, end + 1)
-      );
+      return JSON.parse(raw.slice(first, last + 1));
     } catch {}
   }
 
   return null;
 }
 
-/* =========================================================
-   VAULT NORMALIZATION
-   ========================================================= */
 
-function arr(value) {
-  return Array.isArray(value)
-    ? value
-    : [];
-}
-
-function clean(value) {
-  return String(value ?? "")
-    .trim()
-    .replace(/\s+/g, " ");
-}
+// ============================================================
+// VAULT NORMALIZATION
+// ============================================================
 
 function normalizeVault(vault = {}) {
   return {
-    interests: arr(vault.interests)
-      .map(clean)
-      .filter(Boolean),
-
-    hobbies: arr(vault.hobbies)
-      .map(clean)
-      .filter(Boolean),
-
-    likings: arr(vault.likings)
-      .map(clean)
-      .filter(Boolean),
-
-    strongSubjects: arr(
-      vault.strongSubjects ??
-      vault.subjects
-    )
-      .map(x => {
-        if (typeof x === "string")
-          return clean(x);
-
-        return clean(
-          x?.name
-            ? `${x.name}${
-                x.level
-                  ? ` (${x.level})`
-                  : ""
-              }`
-            : ""
-        );
-      })
-      .filter(Boolean),
-
-    preferredRoles: arr(
-      vault.preferredRoles ??
-      vault.preferredRolesInPriorityOrder ??
-      vault.roles
-    )
-      .map(x => {
-        if (typeof x === "string")
-          return clean(x);
-
-        return clean(
-          x?.name ||
-          x?.role ||
-          x?.title ||
-          ""
-        );
-      })
-      .filter(Boolean),
-
-    nonNegotiableCareer: clean(
-      vault.nonNegotiableCareer ??
-      vault.nonnegotiable ??
-      vault.nonNegotiable ??
-      ""
+    interests: unique(
+      arr(vault.interests ?? vault.interest)
     ),
 
-    skills: arr(
-      vault.skills ??
-      vault.verifiedSkills
-    )
-      .map(x => {
-        if (typeof x === "string")
-          return clean(x);
+    hobbies: unique(
+      arr(vault.hobbies ?? vault.activities)
+    ),
 
-        return clean(
-          x?.name
-            ? `${x.name}${
-                x.level
-                  ? ` (${x.level})`
-                  : ""
-              }`
-            : ""
-        );
-      })
-      .filter(Boolean),
+    likings: unique(
+      arr(vault.likings ?? vault.likes)
+    ),
+
+    strongSubjects: unique(
+      arr(
+        vault.strongSubjects ??
+        vault.subjects ??
+        vault.strong_subjects
+      )
+    ),
+
+    preferredRoles: unique(
+      arr(
+        vault.preferredRoles ??
+        vault.roles ??
+        vault.preferred_roles
+      )
+    ),
+
+    nonNegotiable: clean(
+      vault.nonNegotiable ??
+      vault.nonnegotiable ??
+      vault.non_negotiable
+    ),
 
     chosenField: clean(
       vault.chosenField ??
       vault.field ??
-      ""
+      vault.chosen_field
     ),
 
-    reasonForField: clean(
-      vault.reasonForField ??
+    whyField: clean(
       vault.whyField ??
-      ""
+      vault.why_field
     ),
 
-    reasonNotOtherFields: clean(
-      vault.reasonNotOtherFields ??
+    whyNotOthers: clean(
       vault.whyNotOthers ??
-      ""
+      vault.why_not_others
     ),
 
-    alternatives: arr(
-      vault.alternatives ??
-      vault.alternativesConsidered
+    skills: unique(
+      arr(
+        vault.skills ??
+        vault.verifiedSkills ??
+        vault.verified_skills
+      )
+    ),
+
+    stage: clean(
+      vault.stage ??
+      vault.educationStage ??
+      ""
     )
-      .map(clean)
-      .filter(Boolean)
   };
 }
 
-/* =========================================================
-   TEST ZONE PROMPT
-   ========================================================= */
 
-function buildTestPrompt({
-  vault,
-  stage = "student",
-  repair = false,
-  previous = null,
-  errors = []
-}) {
-  const V = normalizeVault(vault);
+// ============================================================
+// VAULT CONTEXT
+// ============================================================
+
+function vaultContext(vault) {
+  const v = normalizeVault(vault);
+
+  return {
+    interests: v.interests,
+    hobbies: v.hobbies,
+    likings: v.likings,
+    strongSubjects: v.strongSubjects,
+    preferredRoles: v.preferredRoles,
+    nonNegotiable: v.nonNegotiable,
+    chosenField: v.chosenField,
+    whyField: v.whyField,
+    whyNotOthers: v.whyNotOthers,
+    skills: v.skills,
+    stage: v.stage
+  };
+}
+
+
+// ============================================================
+// TEST ZONE PROMPT
+// ============================================================
+
+function buildTestPrompt(vault) {
+  const v = normalizeVault(vault);
 
   return `
-You are the AI question-generation engine for CareerMitra.
+You are the AI assessment engine for CareerMitra.
 
-Your ONLY job is to generate a personalized career-counselling
-test for ONE specific student.
+Your ONLY job in this request is to create a personalised career-counselling
+questionnaire from the student's Personal Vault.
 
-STUDENT LIFE STAGE:
-${stage}
+THIS MUST BE PERSONALISED.
 
-PERSONAL VAULT:
-${JSON.stringify(V, null, 2)}
+The questions MUST be generated from the student's actual Vault data below.
 
-==================================================
-CORE REQUIREMENT
-==================================================
+Do NOT use a fixed question bank.
 
-Every question must be generated specifically using the
-student's Personal Vault.
+Do NOT return generic questions that could be shown to every student.
 
-DO NOT use a generic pre-written question bank.
+Two students with different Vaults MUST receive meaningfully different questions.
 
-DO NOT generate the same questions for every student.
+PERSONAL VAULT
+===============
 
-If Student A and Student B have different Vault information,
-their questions MUST be meaningfully different.
+Interests:
+${JSON.stringify(v.interests)}
 
-The Vault is the source of personalization.
+Hobbies / Activities:
+${JSON.stringify(v.hobbies)}
 
-==================================================
+Likings:
+${JSON.stringify(v.likings)}
+
+Strong Subjects:
+${JSON.stringify(v.strongSubjects)}
+
+Preferred Roles:
+${JSON.stringify(v.preferredRoles)}
+
+Non-Negotiable Career:
+${JSON.stringify(v.nonNegotiable)}
+
+Chosen Field:
+${JSON.stringify(v.chosenField)}
+
+Why Chosen Field:
+${JSON.stringify(v.whyField)}
+
+Why Not Other Fields:
+${JSON.stringify(v.whyNotOthers)}
+
+Verified Skills:
+${JSON.stringify(v.skills)}
+
+Education Stage:
+${JSON.stringify(v.stage)}
+
+
 QUESTION DISTRIBUTION
-==================================================
+=====================
 
-Generate EXACTLY 25 questions:
+Generate EXACTLY 25 questions.
 
-1. Interests              = 5
-2. Hobbies / Activities   = 4
-3. Strong Subjects        = 4
-4. Career / Role Choices  = 5
-5. Skills / Strengths     = 4
-6. Work Style / Personality = 3
+Interests: 5
+Hobbies / Activities: 4
+Strong Subjects: 4
+Career / Role Preferences: 5
+Skills / Strengths: 4
+Work Style / Personality: 3
 
-TOTAL = 25
 
-==================================================
-PERSONALIZATION RULE
-==================================================
+PERSONALISATION RULE
+====================
 
-For every question, include a "basedOn" field.
+Every question must be grounded in the student's Vault.
 
-"basedOn" must identify the actual Personal Vault information
-used to create that question.
+For each question provide "basedOn".
 
-Examples:
+"basedOn" must identify the actual Vault item(s) used to construct that
+question.
 
-"Interests: robotics"
+Example:
 
-"Hobbies: chess"
+Vault:
+Strong Subjects = ["Physics", "Mathematics"]
 
-"Strong Subject: Physics"
+Good:
+"Between Physics and Mathematics, which type of problem do you enjoy
+solving for a longer time?"
 
-"Preferred Role: Data Scientist"
+basedOn:
+["Physics", "Mathematics"]
 
-"Skill: Python"
+Bad:
+"Do you enjoy problem solving?"
 
-"Chosen Field: Computer Science"
+because that question could be given to everyone.
 
-Never write vague values such as:
 
-"General"
+QUESTION QUALITY
+================
 
-"Student profile"
+Questions must:
 
-"Career interests"
+1. Be neutral.
+2. Not tell the student which answer is better.
+3. Not push a particular career.
+4. Not assume that the student's existing preference is correct.
+5. Explore genuine preference.
+6. Avoid repetition.
+7. Use the student's actual Vault information.
+8. Have exactly 4 answer options.
+9. Have four meaningfully different options.
+10. Avoid "All of the above".
+11. Avoid "None of the above".
+12. Avoid obviously correct answers.
+13. Avoid leading language.
+14. Avoid saying "Since you like X, you should..."
+15. Do not mention that the AI is analysing the student.
+16. Do not directly reveal scoring logic.
 
-"Personal information"
+WORK-STYLE / PERSONALITY QUESTIONS
+==================================
 
-unless the question genuinely cannot be grounded in a Vault
-item.
+Personality questions may use the student's Vault as context.
 
-At least 80% of the 25 questions MUST be directly grounded
-in an actual Vault item.
+They should explore dimensions such as:
 
-Use different Vault items across the test.
+- analytical vs intuitive
+- structured vs flexible
+- individual vs collaborative
+- practical vs theoretical
+- stable vs uncertain environments
+- deep-specialisation vs variety
 
-Do not repeatedly use only the first interest.
+But do NOT force the student into one personality type.
 
-==================================================
-NEUTRALITY
-==================================================
 
-This is a CAREER COUNSELLING test.
+TRAIT MAP
+=========
 
-Do NOT push the student toward:
+Every question must include:
 
-- engineering
-- medicine
-- coding
-- government jobs
-- business
-- any particular career
+traitMap: {
+  R: number,
+  I: number,
+  A: number,
+  S: number,
+  E: number,
+  C: number
+}
 
-Do not make one option sound superior.
+Each value must be between 0 and 2.
 
-There are no "correct" personality answers.
+The values represent how strongly an option relates to that Holland/RIASEC
+dimension.
 
-The questions should discover the student's preferences,
-not manipulate them.
+Keep the scoring subtle and do not make one option obviously superior.
 
-==================================================
-LANGUAGE
-==================================================
 
-Use very simple English.
-
-Short questions.
-
-Short options.
-
-Suitable for a Class 8 student.
-
-No unnecessary jargon.
-
-==================================================
-TRAIT SYSTEM
-==================================================
-
-For preference/personality questions use Holland codes:
-
-R = Realistic
-I = Investigative
-A = Artistic
-S = Social
-E = Enterprising
-C = Conventional
-
-Each personality question should have four different
-trait codes.
-
-There is no correct personality answer.
-
-Do not expose Holland names to the student.
-
-==================================================
-OUTPUT FORMAT
-==================================================
+OUTPUT
+======
 
 Return ONLY valid JSON.
 
-The output MUST be:
+Schema:
 
 {
   "questions": [
     {
       "id": 1,
-      "cat": "Interests",
-      "basedOn": "Interests: robotics",
-      "q": "If you could spend more time learning about robotics, what would interest you most?",
-      "o": [
-        {
-          "text": "Building and testing machines",
-          "trait": "R"
-        },
-        {
-          "text": "Finding out how the machine works",
-          "trait": "I"
-        },
-        {
-          "text": "Designing how it looks",
-          "trait": "A"
-        },
-        {
-          "text": "Showing others how it works",
-          "trait": "S"
-        }
-      ]
+      "category": "Interests",
+      "question": "...",
+      "options": [
+        "...",
+        "...",
+        "...",
+        "..."
+      ],
+      "basedOn": [
+        "actual Vault item"
+      ],
+      "traitMap": {
+        "R": 0,
+        "I": 0,
+        "A": 0,
+        "S": 0,
+        "E": 0,
+        "C": 0
+      }
     }
   ]
 }
 
-For subject/knowledge questions where there is a genuine
-correct answer, use:
-
-{
-  "text": "...",
-  "correct": true
-}
-
-Do NOT mix "correct" and "trait" in the same option.
-
-==================================================
-HARD RULES
-==================================================
-
 Exactly 25 questions.
-
-Exactly 4 options per question.
-
-No duplicate questions.
-
-No duplicate option inside a question.
-
-Every question must have:
-
-id
-cat
-basedOn
-q
-o
-
-Every question must have meaningful personalization.
-
-No empty questions.
-
-No empty options.
-
-No career-leading language.
-
-No "which career is best" questions.
-
-No questions that directly reveal the scoring system.
-
-${
-  repair
-    ? `
-==================================================
-REPAIR MODE
-==================================================
-
-The previous AI output failed validation.
-
-Previous output:
-${JSON.stringify(previous, null, 2)}
-
-Validation errors:
-${JSON.stringify(errors, null, 2)}
-
-Repair ONLY the problems.
-
-Return a completely valid 25-question JSON object.
-
-Do not fall back to generic questions.
-Do not remove personalization.
-`
-    : ""
-}
+No markdown.
+No explanation outside JSON.
 `;
 }
 
-/* =========================================================
-   STRUCTURAL VALIDATION
-   ========================================================= */
 
-const CATEGORY_COUNTS = {
-  Interests: 5,
+// ============================================================
+// TEST VALIDATION
+// ============================================================
+
+const REQUIRED_CATEGORIES = {
+  "Interests": 5,
   "Hobbies / Activities": 4,
   "Strong Subjects": 4,
-  "Career / Role Choices": 5,
+  "Career / Role Preferences": 5,
   "Skills / Strengths": 4,
   "Work Style / Personality": 3
 };
 
-function normalizeCategory(cat) {
-  const s = clean(cat).toLowerCase();
+function normalizeCategory(category) {
+  const c = clean(category).toLowerCase();
 
-  if (s.includes("interest"))
+  if (c.includes("interest"))
     return "Interests";
 
   if (
-    s.includes("hobby") ||
-    s.includes("activity")
+    c.includes("hobby") ||
+    c.includes("activity")
   )
     return "Hobbies / Activities";
 
   if (
-    s.includes("subject") ||
-    s.includes("academic")
+    c.includes("subject") ||
+    c.includes("academic")
   )
     return "Strong Subjects";
 
   if (
-    s.includes("career") ||
-    s.includes("role")
+    c.includes("career") ||
+    c.includes("role")
   )
-    return "Career / Role Choices";
+    return "Career / Role Preferences";
 
   if (
-    s.includes("skill") ||
-    s.includes("strength")
+    c.includes("skill") ||
+    c.includes("strength")
   )
     return "Skills / Strengths";
 
   if (
-    s.includes("work style") ||
-    s.includes("personality")
+    c.includes("personality") ||
+    c.includes("work style")
   )
     return "Work Style / Personality";
 
-  return clean(cat);
+  return "";
 }
 
-function validateTest(data, vault) {
-  const errors = [];
+
+// ============================================================
+// SEMANTIC VAULT GROUNDING
+// ============================================================
+
+function tokens(text) {
+  return clean(text)
+    .toLowerCase()
+    .replace(/[^a-z0-9+#.\s-]/g, " ")
+    .split(/\s+/)
+    .filter(x => x.length >= 3);
+}
+
+function similarity(a, b) {
+  const A = new Set(tokens(a));
+  const B = new Set(tokens(b));
+
+  if (!A.size || !B.size) return 0;
+
+  let overlap = 0;
+
+  for (const x of A) {
+    if (B.has(x)) overlap++;
+  }
+
+  return overlap / Math.max(1, Math.min(A.size, B.size));
+}
+
+function vaultItemsForCategory(v, category) {
+  switch (category) {
+    case "Interests":
+      return [
+        ...v.interests,
+        ...v.likings
+      ];
+
+    case "Hobbies / Activities":
+      return [
+        ...v.hobbies,
+        ...v.likings
+      ];
+
+    case "Strong Subjects":
+      return [
+        ...v.strongSubjects
+      ];
+
+    case "Career / Role Preferences":
+      return [
+        ...v.preferredRoles,
+        v.nonNegotiable,
+        v.chosenField
+      ].filter(Boolean);
+
+    case "Skills / Strengths":
+      return [
+        ...v.skills,
+        ...v.strongSubjects
+      ];
+
+    case "Work Style / Personality":
+      return [
+        ...v.interests,
+        ...v.hobbies,
+        ...v.preferredRoles,
+        ...v.skills,
+        ...v.strongSubjects
+      ];
+
+    default:
+      return [];
+  }
+}
+
+function isGrounded(question, basedOn, vault, category) {
+  const categoryItems = vaultItemsForCategory(
+    vault,
+    category
+  );
+
+  const references = unique([
+    ...arr(basedOn),
+    ...categoryItems
+  ]);
+
+  const q = clean(question);
+
+  if (!q) return false;
+
+  // Strong direct grounding.
+  for (const item of categoryItems) {
+    if (
+      item.length >= 3 &&
+      (
+        q.toLowerCase().includes(item.toLowerCase()) ||
+        similarity(q, item) >= 0.34
+      )
+    ) {
+      return true;
+    }
+  }
+
+  // AI may put the grounding in basedOn.
+  for (const item of arr(basedOn)) {
+    if (
+      categoryItems.some(
+        actual =>
+          similarity(item, actual) >= 0.45 ||
+          clean(item).toLowerCase() ===
+          clean(actual).toLowerCase()
+      )
+    ) {
+      return true;
+    }
+  }
+
+  // Work-style questions can legitimately synthesize several Vault signals.
+  if (
+    category === "Work Style / Personality" &&
+    references.length >= 2
+  ) {
+    return references.some(
+      x => similarity(q, x) >= 0.22
+    );
+  }
+
+  return false;
+}
+
+
+function validateTraitMap(map) {
+  if (!map || typeof map !== "object") {
+    return false;
+  }
+
+  const keys = ["R", "I", "A", "S", "E", "C"];
+
+  return keys.every(key => {
+    const n = Number(map[key]);
+
+    return (
+      Number.isFinite(n) &&
+      n >= 0 &&
+      n <= 2
+    );
+  });
+}
+
+
+function validateQuestion(question, vault) {
+  const issues = [];
+
+  if (!question || typeof question !== "object") {
+    return ["question is not an object"];
+  }
+
+  const category =
+    normalizeCategory(question.category);
+
+  if (!category) {
+    issues.push("invalid category");
+  }
+
+  if (!clean(question.question)) {
+    issues.push("missing question");
+  }
+
+  const options = arr(question.options);
+
+  if (options.length !== 4) {
+    issues.push("must have exactly 4 options");
+  }
 
   if (
-    !data ||
-    !Array.isArray(data.questions)
+    unique(options.map(x => x.toLowerCase())).length !== 4
   ) {
+    issues.push("options must be unique");
+  }
+
+  if (!arr(question.basedOn).length) {
+    issues.push("missing basedOn");
+  }
+
+  if (!validateTraitMap(question.traitMap)) {
+    issues.push("invalid traitMap");
+  }
+
+  if (
+    category &&
+    !isGrounded(
+      question.question,
+      question.basedOn,
+      vault,
+      category
+    )
+  ) {
+    issues.push(
+      "question is not sufficiently grounded in the Personal Vault"
+    );
+  }
+
+  // Obvious leading / biased phrasing.
+  const q = clean(question.question).toLowerCase();
+
+  const bannedPatterns = [
+    "obviously",
+    "clearly the best",
+    "correct answer",
+    "right career",
+    "ideal career",
+    "best career",
+    "you should choose",
+    "since you like",
+    "therefore you should",
+    "which career should you definitely"
+  ];
+
+  if (
+    bannedPatterns.some(
+      p => q.includes(p)
+    )
+  ) {
+    issues.push("leading or biased wording");
+  }
+
+  return issues;
+}
+
+
+// ============================================================
+// STRICT COMPLETE TEST VALIDATION
+// ============================================================
+
+function validateTestPayload(data, vault) {
+  const errors = [];
+
+  if (!data || !Array.isArray(data.questions)) {
     return {
       valid: false,
-      errors: ["Missing questions array."]
+      errors: ["missing questions array"]
     };
   }
 
-  const questions = data.questions;
-
-  if (questions.length !== 25) {
+  if (data.questions.length !== 25) {
     errors.push(
-      `Expected 25 questions, got ${questions.length}.`
+      `expected 25 questions, received ${data.questions.length}`
     );
   }
 
   const counts = {};
 
-  const normalizedVault =
-    normalizeVault(vault);
-
-  const vaultStrings = [
-    ...normalizedVault.interests,
-    ...normalizedVault.hobbies,
-    ...normalizedVault.likings,
-    ...normalizedVault.strongSubjects,
-    ...normalizedVault.preferredRoles,
-    ...normalizedVault.skills,
-    normalizedVault.nonNegotiableCareer,
-    normalizedVault.chosenField,
-    normalizedVault.reasonForField,
-    normalizedVault.reasonNotOtherFields,
-    ...normalizedVault.alternatives
-  ]
-    .map(x => clean(x).toLowerCase())
-    .filter(Boolean);
-
-  const seenQuestions = new Set();
-
-  for (let i = 0; i < questions.length; i++) {
-    const q = questions[i];
-
-    if (!q || typeof q !== "object") {
-      errors.push(
-        `Question ${i + 1} is invalid.`
-      );
-      continue;
-    }
-
+  for (const q of data.questions) {
     const category =
-      normalizeCategory(q.cat);
+      normalizeCategory(q?.category);
 
-    counts[category] =
-      (counts[category] || 0) + 1;
+    if (category) {
+      counts[category] =
+        (counts[category] || 0) + 1;
+    }
 
-    if (!clean(q.q)) {
+    const qErrors =
+      validateQuestion(q, vault);
+
+    if (qErrors.length) {
       errors.push(
-        `Question ${i + 1} has no text.`
+        `Q${q?.id ?? "?"}: ${qErrors.join(", ")}`
       );
-    }
-
-    if (!clean(q.basedOn)) {
-      errors.push(
-        `Question ${i + 1} has no basedOn.`
-      );
-    }
-
-    if (
-      !Array.isArray(q.o) ||
-      q.o.length !== 4
-    ) {
-      errors.push(
-        `Question ${i + 1} must have exactly 4 options.`
-      );
-      continue;
-    }
-
-    const questionKey =
-      clean(q.q).toLowerCase();
-
-    if (seenQuestions.has(questionKey)) {
-      errors.push(
-        `Duplicate question: ${i + 1}.`
-      );
-    }
-
-    seenQuestions.add(questionKey);
-
-    const optionTexts = q.o
-      .map(o =>
-        clean(o?.text).toLowerCase()
-      )
-      .filter(Boolean);
-
-    if (new Set(optionTexts).size !== 4) {
-      errors.push(
-        `Question ${i + 1} has duplicate options.`
-      );
-    }
-
-    const personality =
-      category ===
-      "Work Style / Personality" ||
-      category === "Interests" ||
-      category === "Hobbies / Activities" ||
-      category === "Career / Role Choices" ||
-      category === "Skills / Strengths";
-
-    if (personality) {
-      const traits = q.o.map(
-        o => clean(o?.trait).toUpperCase()
-      );
-
-      const validTraits =
-        traits.every(t =>
-          ["R", "I", "A", "S", "E", "C"]
-            .includes(t)
-        );
-
-      if (validTraits) {
-        if (
-          new Set(traits).size !== 4
-        ) {
-          errors.push(
-            `Question ${i + 1} must use 4 different Holland traits.`
-          );
-        }
-      }
-    }
-
-    /*
-     * Grounding check.
-     *
-     * We don't require exact wording because AI may paraphrase.
-     * We require meaningful overlap with an actual Vault item.
-     */
-    if (
-      category !== "Work Style / Personality"
-    ) {
-      const grounding =
-        clean(q.basedOn).toLowerCase();
-
-      const grounded =
-        vaultStrings.some(item => {
-          if (
-            grounding.includes(item) ||
-            item.includes(grounding)
-          ) {
-            return true;
-          }
-
-          const words = item
-            .split(/[^a-z0-9]+/)
-            .filter(w => w.length >= 4);
-
-          if (!words.length)
-            return false;
-
-          const hits = words.filter(w =>
-            grounding.includes(w)
-          ).length;
-
-          return hits >=
-            Math.min(2, words.length);
-        });
-
-      if (!grounded) {
-        errors.push(
-          `Question ${i + 1} is not grounded in the student's Vault.`
-        );
-      }
     }
   }
 
-  for (const [category, expected] of
-    Object.entries(CATEGORY_COUNTS)) {
-    if (
-      (counts[category] || 0) !== expected
-    ) {
+  for (const [category, required] of Object.entries(
+    REQUIRED_CATEGORIES
+  )) {
+    if ((counts[category] || 0) !== required) {
       errors.push(
-        `${category}: expected ${expected}, got ${
+        `${category}: expected ${required}, got ${
           counts[category] || 0
-        }.`
+        }`
       );
     }
   }
 
-  /*
-   * We intentionally require real personalization.
-   */
-  const groundedCount =
-    questions.filter(q => {
-      const b =
-        clean(q?.basedOn).toLowerCase();
+  // Questions themselves must be sufficiently different.
+  const normalizedQuestions =
+    data.questions.map(q =>
+      clean(q?.question).toLowerCase()
+    );
 
-      return vaultStrings.some(item =>
-        b.includes(item) ||
-        item.includes(b)
-      );
-    }).length;
+  const duplicates = new Set();
 
-  if (groundedCount < 20) {
+  for (let i = 0; i < normalizedQuestions.length; i++) {
+    for (let j = i + 1; j < normalizedQuestions.length; j++) {
+      const a = normalizedQuestions[i];
+      const b = normalizedQuestions[j];
+
+      if (
+        a &&
+        b &&
+        (
+          a === b ||
+          similarity(a, b) >= 0.82
+        )
+      ) {
+        duplicates.add(`${i + 1}-${j + 1}`);
+      }
+    }
+  }
+
+  if (duplicates.size) {
     errors.push(
-      `Only ${groundedCount}/25 questions are clearly Vault-grounded. At least 20 are required.`
+      `duplicate/similar questions: ${[
+        ...duplicates
+      ].join(", ")}`
     );
   }
 
   return {
     valid: errors.length === 0,
-    errors,
-    groundedCount,
-    counts
+    errors
   };
 }
 
-/* =========================================================
-   OPENROUTER
-   ========================================================= */
 
-async function requestAI(
+// ============================================================
+// OPENROUTER REQUEST
+// ============================================================
+
+async function requestAI({
   prompt,
-  {
-    maxAttempts = 3
-  } = {}
-) {
+  system = "",
+  modelList = FALLBACK_MODELS,
+  maxAttempts = 3
+}) {
   const apiKey =
     process.env.OPENROUTER_API_KEY;
 
   if (!apiKey) {
     throw new Error(
-      "OPENROUTER_API_KEY is missing."
+      "OPENROUTER_API_KEY is missing"
     );
   }
 
@@ -773,87 +804,67 @@ async function requestAI(
     attempt++
   ) {
     const model =
-      MODELS[
-        attempt % MODELS.length
+      modelList[
+        attempt % modelList.length
       ];
 
     try {
-      const controller =
-        new AbortController();
+      const response = await fetch(
+        OPENROUTER_URL,
+        {
+          method: "POST",
 
-      const timeout =
-        setTimeout(
-          () => controller.abort(),
-          30000
-        );
+          headers: {
+            "Authorization":
+              `Bearer ${apiKey}`,
 
-      const response =
-        await fetch(
-          OPENROUTER_URL,
-          {
-            method: "POST",
+            "Content-Type":
+              "application/json",
 
-            headers: {
-              Authorization:
-                `Bearer ${apiKey}`,
+            "HTTP-Referer":
+              process.env.APP_URL ||
+              "https://careermitra.vercel.app",
 
-              "Content-Type":
-                "application/json",
+            "X-Title":
+              "CareerMitra"
+          },
 
-              "HTTP-Referer":
-                "https://careermitra-zeta.vercel.app/",
+          body: JSON.stringify({
+            model,
 
-              "X-Title":
-                "CareerMitra"
+            messages: [
+              {
+                role: "system",
+                content:
+                  system ||
+                  "You are a careful career counselling AI. Return exactly the requested JSON."
+              },
+              {
+                role: "user",
+                content: prompt
+              }
+            ],
+
+            temperature: 0.75,
+
+            max_tokens: 7000,
+
+            provider: {
+              allow_fallbacks: true
             },
 
-            body: JSON.stringify({
-              model,
-
-              messages: [
-                {
-                  role: "system",
-                  content:
-                    `
-You are CareerMitra's AI engine.
-
-Return ONLY valid JSON when JSON is requested.
-
-Follow the user's supplied Personal Vault exactly.
-
-Never replace missing student information
-with generic assumptions.
-
-Never fabricate Personal Vault data.
-`
-                },
-                {
-                  role: "user",
-                  content: prompt
-                }
-              ],
-
-              temperature: 0.85,
-
-              max_tokens: 12000,
-
-              provider: {
-                allow_fallbacks: true
-              }
-            }),
-
-            signal:
-              controller.signal
-          }
-        );
-
-      clearTimeout(timeout);
+            response_format: {
+              type: "json_object"
+            }
+          })
+        }
+      );
 
       const text =
         await response.text();
 
       if (!response.ok) {
-        const err =
+        lastError =
           new Error(
             `OpenRouter ${response.status}: ${text.slice(
               0,
@@ -861,337 +872,549 @@ Never fabricate Personal Vault data.
             )}`
           );
 
-        err.status =
-          response.status;
+        if (
+          RETRYABLE_STATUS.has(
+            response.status
+          )
+        ) {
+          await sleep(
+            300 * (attempt + 1)
+          );
+          continue;
+        }
 
-        throw err;
+        throw lastError;
       }
 
       const json =
-        JSON.parse(text);
+        safeJsonParse(text);
 
-      const output =
-        extractText(json);
+      const content =
+        json?.choices?.[0]?.message?.content;
 
-      if (!output) {
-        throw new Error(
-          "AI returned an empty response."
+      if (!content) {
+        lastError =
+          new Error(
+            "AI returned empty content"
+          );
+
+        await sleep(
+          300 * (attempt + 1)
         );
+
+        continue;
       }
 
       return {
-        text: output,
+        text: content,
         model,
         attempt: attempt + 1
       };
 
-    } catch (err) {
-      lastError = err;
+    } catch (error) {
+      lastError = error;
 
-      const status =
-        Number(err?.status);
-
-      const retryable =
-        !status ||
-        RETRYABLE.has(status);
-
-      if (
-        attempt ===
-          maxAttempts - 1 ||
-        !retryable
-      ) {
-        break;
+      if (attempt < maxAttempts - 1) {
+        await sleep(
+          300 * (attempt + 1)
+        );
       }
-
-      await sleep(
-        400 * (attempt + 1)
-      );
     }
   }
 
   throw lastError ||
-    new Error(
-      "AI request failed."
-    );
+    new Error("AI request failed");
 }
 
-/* =========================================================
-   TEST GENERATION
-   ========================================================= */
 
-async function generateTest(
-  vault,
-  stage
-) {
+// ============================================================
+// AI TEST GENERATION
+// ============================================================
+
+async function generateTest(vault) {
   const prompt =
-    buildTestPrompt({
-      vault,
-      stage
+    buildTestPrompt(vault);
+
+  const first =
+    await requestAI({
+      prompt,
+      modelList: FALLBACK_MODELS,
+      maxAttempts: 3
     });
 
-  let first;
+  let data =
+    safeJsonParse(first.text);
 
-  try {
-    first =
-      await requestAI(prompt, {
-        maxAttempts: 3
-      });
-  } catch (err) {
-    return {
-      ok: false,
-      reason: "AI_REQUEST_FAILED",
-      error: err?.message ||
-        "AI request failed."
-    };
-  }
-
-  const parsed =
-    parseJSON(first.text);
-
-  const validation =
-    validateTest(
-      parsed,
-      vault
+  let validation =
+    validateTestPayload(
+      data,
+      normalizeVault(vault)
     );
 
   if (validation.valid) {
     return {
-      ok: true,
-      data: parsed,
+      data,
       aiGenerated: true,
       repaired: false,
       model: first.model,
-      attempts: first.attempt,
-      validation
+      attempts: first.attempt
     };
   }
 
-  /*
-   * AI output was bad.
-   *
-   * We do NOT use local questions.
-   *
-   * We ask AI to repair its own output.
-   */
-  try {
-    const repairPrompt =
-      buildTestPrompt({
-        vault,
-        stage,
-        repair: true,
-        previous: parsed,
-        errors: validation.errors
-      });
 
-    const repaired =
-      await requestAI(
-        repairPrompt,
-        {
-          maxAttempts: 2
-        }
-      );
+  // ========================================================
+  // AI REPAIR
+  // ========================================================
 
-    const repairedJSON =
-      parseJSON(
-        repaired.text
-      );
+  const repairPrompt = `
+The previous AI-generated CareerMitra Test Zone output
+was structurally or semantically invalid.
 
-    const repairedValidation =
-      validateTest(
-        repairedJSON,
-        vault
-      );
+DO NOT create a generic questionnaire.
 
-    if (
-      repairedValidation.valid
-    ) {
-      return {
-        ok: true,
-        data: repairedJSON,
-        aiGenerated: true,
-        repaired: true,
-        model: repaired.model,
-        attempts:
-          first.attempt +
-          repaired.attempt,
-        validation:
-          repairedValidation
-      };
-    }
+REGENERATE the complete 25-question test using the SAME
+Personal Vault.
 
+The questions MUST remain personalised to the Vault.
+
+VALIDATION ERRORS:
+${JSON.stringify(validation.errors, null, 2)}
+
+PERSONAL VAULT:
+${JSON.stringify(
+  vaultContext(vault),
+  null,
+  2
+)}
+
+Required distribution:
+
+Interests: 5
+Hobbies / Activities: 4
+Strong Subjects: 4
+Career / Role Preferences: 5
+Skills / Strengths: 4
+Work Style / Personality: 3
+
+Every question needs:
+
+id
+category
+question
+exactly 4 options
+basedOn
+traitMap with R,I,A,S,E,C from 0 to 2
+
+"basedOn" MUST reference actual Vault information.
+
+Do not copy a fixed question bank.
+
+Do not return any explanation.
+
+Return ONLY JSON:
+
+{
+  "questions": [...]
+}
+`;
+
+  const repaired =
+    await requestAI({
+      prompt: repairPrompt,
+      modelList: FALLBACK_MODELS,
+      maxAttempts: 2
+    });
+
+  data =
+    safeJsonParse(
+      repaired.text
+    );
+
+  validation =
+    validateTestPayload(
+      data,
+      normalizeVault(vault)
+    );
+
+  if (validation.valid) {
     return {
-      ok: false,
-      reason:
-        "AI_OUTPUT_FAILED_VALIDATION",
-      error:
-        "AI generated questions but the output did not pass CareerMitra validation.",
-      validation:
-        repairedValidation
-    };
-
-  } catch (err) {
-    return {
-      ok: false,
-      reason:
-        "AI_REPAIR_FAILED",
-      error:
-        err?.message ||
-        "AI repair failed."
+      data,
+      aiGenerated: true,
+      repaired: true,
+      model: repaired.model,
+      attempts:
+        first.attempt +
+        repaired.attempt
     };
   }
+
+  const error =
+    new Error(
+      "AI generated invalid Test Zone output"
+    );
+
+  error.code =
+    "INVALID_AI_TEST";
+
+  error.validation =
+    validation.errors;
+
+  throw error;
 }
 
-/* =========================================================
-   OTHER AI REQUESTS
-   ========================================================= */
+
+// ============================================================
+// LAST-RESORT FALLBACK
+// ============================================================
+
+function emergencyFallback(vault) {
+  const v =
+    normalizeVault(vault);
+
+  const interest =
+    v.interests[0] ||
+    v.likings[0] ||
+    "your interests";
+
+  const subject =
+    v.strongSubjects[0] ||
+    "your strongest subject";
+
+  const hobby =
+    v.hobbies[0] ||
+    "your favourite activity";
+
+  const role =
+    v.preferredRoles[0] ||
+    v.nonNegotiable ||
+    "your preferred career";
+
+  const skill =
+    v.skills[0] ||
+    "one of your skills";
+
+  const make = (
+    id,
+    category,
+    question,
+    options,
+    basedOn
+  ) => ({
+    id,
+    category,
+    question,
+    options,
+    basedOn,
+    traitMap: {
+      R: 0,
+      I: 1,
+      A: 0,
+      S: 0,
+      E: 0,
+      C: 1
+    }
+  });
+
+  const questions = [];
+
+  // This is deliberately only an emergency safety net.
+  // It is NOT presented as AI-generated.
+
+  for (let i = 0; i < 5; i++) {
+    questions.push(
+      make(
+        questions.length + 1,
+        "Interests",
+        `When exploring ${interest}, which activity would you be most interested in trying?`,
+        [
+          "Understanding how it works",
+          "Creating something related to it",
+          "Discussing it with others",
+          "Applying it to a practical problem"
+        ],
+        [interest]
+      )
+    );
+  }
+
+  for (let i = 0; i < 4; i++) {
+    questions.push(
+      make(
+        questions.length + 1,
+        "Hobbies / Activities",
+        `What part of ${hobby} do you find most engaging?`,
+        [
+          "Planning it",
+          "Doing it hands-on",
+          "Improving your technique",
+          "Sharing it with others"
+        ],
+        [hobby]
+      )
+    );
+  }
+
+  for (let i = 0; i < 4; i++) {
+    questions.push(
+      make(
+        questions.length + 1,
+        "Strong Subjects",
+        `When working with ${subject}, which type of task do you prefer?`,
+        [
+          "Learning the concepts",
+          "Solving difficult problems",
+          "Applying the concepts",
+          "Explaining the concepts"
+        ],
+        [subject]
+      )
+    );
+  }
+
+  for (let i = 0; i < 5; i++) {
+    questions.push(
+      make(
+        questions.length + 1,
+        "Career / Role Preferences",
+        `When considering ${role}, which aspect would matter most to you?`,
+        [
+          "Nature of the work",
+          "Learning opportunities",
+          "Long-term growth",
+          "Work environment"
+        ],
+        [role]
+      )
+    );
+  }
+
+  for (let i = 0; i < 4; i++) {
+    questions.push(
+      make(
+        questions.length + 1,
+        "Skills / Strengths",
+        `How would you prefer to use ${skill} in your future work?`,
+        [
+          "Solve practical problems",
+          "Build new things",
+          "Help other people",
+          "Analyse complex situations"
+        ],
+        [skill]
+      )
+    );
+  }
+
+  for (let i = 0; i < 3; i++) {
+    questions.push(
+      make(
+        questions.length + 1,
+        "Work Style / Personality",
+        `When working on something connected with ${interest}, which environment suits you best?`,
+        [
+          "Independent and focused",
+          "Collaborative and interactive",
+          "Structured and planned",
+          "Flexible and experimental"
+        ],
+        [interest]
+      )
+    );
+  }
+
+  return {
+    questions
+  };
+}
+
+
+// ============================================================
+// OTHER AI PURPOSES
+// ============================================================
 
 function genericPrompt(prompt) {
   return `
-You are CareerMitra, an AI career counselling assistant.
+You are CareerMitra's AI career counselling engine.
 
-Follow the supplied user data exactly.
+Be neutral, evidence-based and student-specific.
+
+Do not force a career choice.
 
 Do not invent facts.
 
-Do not make unsupported career recommendations.
-
-If JSON is requested, return ONLY valid JSON.
+Return valid JSON only.
 
 USER REQUEST:
 ${prompt}
 `;
 }
 
-/* =========================================================
-   API HANDLER
-   ========================================================= */
 
-export default async function handler(
-  req,
-  res
-) {
+// ============================================================
+// HANDLER
+// ============================================================
+
+export default async function handler(req, res) {
+
   if (req.method !== "POST") {
     return res.status(405).json({
       ok: false,
-      error:
-        "Method not allowed."
+      error: "Method not allowed"
     });
   }
 
   try {
+
     const body =
       req.body || {};
 
     const prompt =
-      typeof body.prompt === "string"
-        ? body.prompt
-        : "";
+      clean(body.prompt);
 
-    if (!prompt.trim()) {
-      return res.status(400).json({
-        ok: false,
-        error:
-          "Prompt is required."
-      });
-    }
+    const purpose =
+      clean(body.purpose).toLowerCase();
 
-    /*
-     * Frontend sends this flag for Test Zone.
-     */
-    const isTestZone =
-      body.purpose === "test" ||
+    const vault =
+      body.vault ||
+      body.personalVault ||
+      null;
+
+
+    // ========================================================
+    // TEST ZONE
+    // ========================================================
+
+    const isTest =
+      purpose === "test" ||
+      purpose === "testzone" ||
+      purpose === "test_zone" ||
       body.testZone === true ||
-      /PERSONAL VAULT[\s\S]{0,10000}25/i.test(
+      /personal vault|25 questions|test zone/i.test(
         prompt
       );
 
-    if (isTestZone) {
-      const vault =
-        body.vault ||
-        {};
+    if (isTest) {
 
-      const stage =
-        body.stage ||
-        "student";
-
-      const result =
-        await generateTest(
-          vault,
-          stage
-        );
-
-      if (!result.ok) {
-        return res.status(503).json({
+      if (!vault) {
+        return res.status(400).json({
           ok: false,
-          aiGenerated: false,
-          fallbackAllowed: false,
-          testZone: true,
-          reason:
-            result.reason,
           error:
-            result.error,
-          validation:
-            result.validation ||
-            null
+            "Personal Vault is required for Test Zone generation."
         });
       }
 
-      return res.status(200).json({
-        ok: true,
-        aiGenerated: true,
-        fallbackAllowed: false,
-        testZone: true,
-        repaired:
-          result.repaired,
-        model:
-          result.model,
-        attempts:
-          result.attempts,
-        validation:
-          result.validation,
-        data:
-          result.data
+      try {
+
+        const result =
+          await generateTest(
+            vault
+          );
+
+        return res.status(200).json({
+          ok: true,
+          data: result.data,
+          aiGenerated: true,
+          fallbackUsed: false,
+          repaired: result.repaired,
+          model: result.model,
+          attempts: result.attempts
+        });
+
+      } catch (error) {
+
+        // ====================================================
+        // ONLY HERE DOES EMERGENCY FALLBACK HAPPEN
+        // ====================================================
+
+        console.error(
+          "TEST ZONE AI FAILURE:",
+          error
+        );
+
+        const fallback =
+          emergencyFallback(
+            vault
+          );
+
+        return res.status(200).json({
+          ok: true,
+
+          data: fallback,
+
+          aiGenerated: false,
+
+          fallbackUsed: true,
+
+          fallbackReason:
+            error?.code ||
+            error?.message ||
+            "AI unavailable",
+
+          warning:
+            "Emergency built-in fallback used."
+        });
+      }
+    }
+
+
+    // ========================================================
+    // NORMAL AI REQUEST
+    // ========================================================
+
+    if (!prompt) {
+      return res.status(400).json({
+        ok: false,
+        error: "Prompt is required"
       });
     }
 
-    /*
-     * Normal CareerMitra AI request.
-     */
     const result =
-      await requestAI(
-        genericPrompt(prompt),
-        {
-          maxAttempts: 3
-        }
+      await requestAI({
+        prompt:
+          genericPrompt(prompt),
+
+        modelList:
+          FALLBACK_MODELS,
+
+        maxAttempts: 3
+      });
+
+    const data =
+      safeJsonParse(
+        result.text
       );
 
-    const parsed =
-      parseJSON(result.text);
+    if (!data) {
+      return res.status(502).json({
+        ok: false,
+        error:
+          "AI returned invalid JSON"
+      });
+    }
 
     return res.status(200).json({
       ok: true,
+      data,
       aiGenerated: true,
-      model:
-        result.model,
-      attempts:
-        result.attempt,
-      data:
-        parsed || result.text
+      fallbackUsed: false,
+      model: result.model,
+      attempts: result.attempt
     });
 
-  } catch (err) {
+  } catch (error) {
+
     console.error(
-      "CareerMitra AI error:",
-      err
+      "CareerMitra AI ERROR:",
+      error
     );
 
-    return res.status(500).json({
+    return res.status(503).json({
       ok: false,
-      aiGenerated: false,
-      fallbackAllowed: false,
       error:
-        err?.message ||
-        "AI service failed."
+        error?.message ||
+        "AI service temporarily unavailable",
+
+      fallbackAllowed: true
     });
   }
 }
