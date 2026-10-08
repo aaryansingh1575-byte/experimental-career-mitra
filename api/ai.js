@@ -2,922 +2,448 @@ export const maxDuration = 60;
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
-// Configurable models. Avoid slow ultra-high-parameter free models for single-shot generation.
-const PRIMARY_MODEL = process.env.OPENROUTER_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free";
+const PRIMARY_MODEL = process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini";
 const TEST_MODEL = process.env.OPENROUTER_TEST_MODEL || "openai/gpt-4o-mini";
 
-// OpenRouter strictly rejects models arrays with more than 3 items
 const FALLBACK_MODELS = [
-  PRIMARY_MODEL,
-  "nvidia/nemotron-3.5-lightning:free",
-  "openrouter/free"
+  PRIMARY_MODEL,
+  "nvidia/nemotron-3.5-lightning:free",
+  "openrouter/free"
 ].filter((v, i, a) => v && a.indexOf(v) === i).slice(0, 3);
 
 const TEST_FALLBACK_MODELS = [
-  TEST_MODEL,
-  "nvidia/nemotron-3.5-lightning:free",
-  "openrouter/free"
+  TEST_MODEL,
+  "nvidia/nemotron-3.5-lightning:free",
+  "openrouter/free"
 ].filter((v, i, a) => v && a.indexOf(v) === i).slice(0, 3);
 
 function cleanText(v) {
-  return String(v ?? "").replace(/\u0000/g, "").trim();
+  return String(v ?? "").replace(/\u0000/g, "").trim();
 }
 
 function stripFence(text) {
-  return String(text || "")
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```$/i, "")
-    .trim();
+  return String(text || "")
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
 }
 
 function parseJSON(text) {
-  if (!text) return null;
-  const s = stripFence(text);
-  try { return JSON.parse(s); } catch (_) {}
+  if (!text) return null;
+  const s = stripFence(text);
+  try { return JSON.parse(s); } catch (_) {}
 
-  const a = s.indexOf("{");
-  const b = s.lastIndexOf("}");
-  if (a >= 0 && b > a) {
-    try { return JSON.parse(s.slice(a, b + 1)); } catch (_) {}
-  }
+  const a = s.indexOf("{");
+  const b = s.lastIndexOf("}");
+  if (a >= 0 && b > a) {
+    try { return JSON.parse(s.slice(a, b + 1)); } catch (_) {}
+  }
 
-  const x = s.indexOf("[");
-  const y = s.lastIndexOf("]");
-  if (x >= 0 && y > x) {
-    try { return JSON.parse(s.slice(x, y + 1)); } catch (_) {}
-  }
+  const x = s.indexOf("[");
+  const y = s.lastIndexOf("]");
+  if (x >= 0 && y > x) {
+    try { return JSON.parse(s.slice(x, y + 1)); } catch (_) {}
+  }
 
-  return null;
+  return null;
 }
 
 function extractText(data) {
-  const c = data?.choices?.[0];
-  if (typeof c?.message?.content === "string") return c.message.content.trim();
-  if (Array.isArray(c?.message?.content)) {
-    return c.message.content.map(x => typeof x === "string" ? x : x?.text || "").join("").trim();
-  }
-  if (typeof c?.text === "string") return c.text.trim();
-  return "";
+  const c = data?.choices?.[0];
+  if (typeof c?.message?.content === "string") return c.message.content.trim();
+  if (Array.isArray(c?.message?.content)) {
+    return c.message.content.map(x => typeof x === "string" ? x : x?.text || "").join("").trim();
+  }
+  if (typeof c?.text === "string") return c.text.trim();
+  return "";
 }
 
 function purposeFor(prompt, webSearch) {
-  const p = String(prompt || "").toLowerCase();
-  if (webSearch) return "live career research";
-  if (/common ground|both sides|family concerns|student test analysis|decision-support analyst/.test(p)) return "common-ground analysis";
-  if (/parent|family|sincere|specific|relevant response|concern/.test(p)) return "family question/answer analysis";
-  if (/complete test|question plan|holland|personal vault|multiple-choice questions/.test(p)) return "student test generation";
-  if (/personality-and-interest test|holland-code tallies|career counsellor/.test(p)) return "student test answer analysis";
-  return "career counselling";
+  const p = String(prompt || "").toLowerCase();
+  if (webSearch) return "live career research";
+  if (/common ground|both sides|family concerns|decision-support analyst/.test(p)) return "common-ground analysis";
+  if (/parent|family|sincere|specific|relevant response|concern/.test(p)) return "family question/answer analysis";
+  if (/complete test|question plan|holland|personal vault|multiple-choice questions/.test(p)) return "student test generation";
+  if (/personality-and-interest test|holland-code tallies|career counsellor/.test(p)) return "student test answer analysis";
+  return "career counselling";
 }
 
 async function requestAI(prompt, webSearch = false, repair = false, testZone = false) {
-  const key = process.env.OPENROUTER_API_KEY;
-  if (!key) throw new Error("OPENROUTER_API_KEY is missing in Vercel Environment Variables.");
+  const key = process.env.OPENROUTER_API_KEY;
+  if (!key) throw new Error("OPENROUTER_API_KEY is missing in Vercel Environment Variables.");
 
-  const purpose = purposeFor(prompt, webSearch);
-  const system = `You are CareerMitra's ${purpose} engine.
+  const purpose = purposeFor(prompt, webSearch);
+  const system = `You are CareerMitra's ${purpose} engine.
 
-Your job is to produce a HIGH-QUALITY, useful result for a real student.
+Your job is to produce an accurate, objective, high-quality result for Indian students and families.
 Return ONLY valid JSON. Never return markdown, prose outside JSON, or code fences.
 
 GENERAL RULES:
-- Use the supplied student/family information exactly; never invent personal facts.
-- For live career research, keep the EXACT career requested.
-- Do not replace a specialization with a broader career.
-- Separate verified facts, reasonable professional context, and uncertainty.
-- Never invent a source URL, salary number, qualification, regulation, statistic, or demand claim.
-- If evidence is weak for a field, return a useful cautious statement rather than an empty generic sentence.
-- Prefer India-specific evidence because CareerMitra is built for Indian students.
-- Write concrete, student-friendly information, not filler.
+- Ground everything in current Indian educational and job market realities.
+- For live career research, research the EXACT requested career; never substitute or broaden it.
+- Keep pay and salary ranges realistic, providing experience/tier context (Tier 1 vs Tier 2/3, freshers vs seniors).
+- When live research web snippets are provided, cite and use only verifiable details from them.
+- Do NOT hallucinate absurd, outdated, or extreme claims.`;
 
-${webSearch ? `LIVE RESEARCH QUALITY:
-- Use the web evidence supplied in the user message.
-- Cross-check important claims across multiple sources when possible.
-- Prefer official Indian authorities, medical boards, government sources, universities, established Indian hospitals and reputable India job portals.
-- Do not treat one job listing as proof of national demand or salary.
-- Explain salary as a range/context when evidence supports it; otherwise state what is and is not verified.
-- For medical careers, distinguish undergraduate medical education, postgraduate specialty training, registration and optional/advanced subspecialty training.
-- For a specialist/subspecialist career, explain the actual pathway instead of giving a generic career paragraph.` : ""}
+  const maxAttempts = testZone ? 1 : (repair ? 2 : 2);
+  const timeoutMs = testZone ? 48000 : (webSearch ? 25000 : 15000);
+  const selectedModel = testZone ? TEST_MODEL : PRIMARY_MODEL;
+  const selectedModels = (testZone ? TEST_FALLBACK_MODELS : FALLBACK_MODELS).slice(0, 3);
+  let lastError = null;
 
-${repair ? `THIS IS A RECOVERY PASS. A previous model response was incomplete or malformed.
-Rebuild the requested JSON from the original evidence. Do not shorten it merely to finish quickly.` : ""}`;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  const maxAttempts = testZone ? 1 : (repair ? 2 : 2);
-  const timeoutMs = testZone ? 48000 : (webSearch ? 18000 : 12000);
-  const selectedModel = testZone ? TEST_MODEL : PRIMARY_MODEL;
-  const selectedModels = (testZone ? TEST_FALLBACK_MODELS : FALLBACK_MODELS).slice(0, 3);
-  let lastError = null;
+    try {
+      const response = await fetch(OPENROUTER_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": process.env.SITE_URL || "https://careermitra.vercel.app",
+          "X-Title": "CareerMitra"
+        },
+        body: JSON.stringify({
+          model: selectedModel,
+          models: selectedModels,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: prompt }
+          ],
+          temperature: webSearch ? 0.1 : 0.2,
+          max_tokens: testZone ? 4000 : 4000,
+          response_format: { type: "json_object" },
+          provider: {
+            allow_fallbacks: true,
+            sort: "throughput"
+          }
+        }),
+        signal: controller.signal
+      });
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const raw = await response.text();
+      let data = null;
+      try { data = JSON.parse(raw); } catch (_) {}
 
-    try {
-      const response = await fetch(OPENROUTER_URL, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${key}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": process.env.SITE_URL || "https://careermitra.vercel.app",
-          "X-Title": "CareerMitra"
-        },
-        body: JSON.stringify({
-          model: selectedModel,
-          models: selectedModels,
-          messages: [
-            { role: "system", content: system },
-            { role: "user", content: prompt }
-          ],
-          temperature: webSearch ? 0.05 : 0.2,
-          max_tokens: testZone ? 4000 : (webSearch ? 6500 : 6000),
-          response_format: { type: "json_object" },
-          provider: {
-            allow_fallbacks: true,
-            sort: "throughput"
-          }
-        }),
-        signal: controller.signal
-      });
+      if (!response.ok) {
+        const error = new Error(
+          cleanText(data?.error?.message || data?.error || `OpenRouter HTTP ${response.status}`)
+        );
+        error.status = response.status;
+        error.retryAfter = response.headers.get("retry-after") || null;
+        throw error;
+      }
 
-      const raw = await response.text();
-      let data = null;
-      try { data = JSON.parse(raw); } catch (_) {}
+      const text = extractText(data);
+      if (!text) throw new Error("OpenRouter returned an empty AI response.");
 
-      if (!response.ok) {
-        const error = new Error(
-          cleanText(data?.error?.message || data?.error || `OpenRouter HTTP ${response.status}`)
-        );
-        error.status = response.status;
-        error.retryAfter = response.headers.get("retry-after") || null;
-        error.providerCode = data?.error?.metadata?.provider_code || null;
-        throw error;
-      }
+      return { text, model: data?.model || selectedModel, attempts: attempt };
+    } catch (error) {
+      lastError = error;
+      const status = Number(error?.status || 0);
 
-      const text = extractText(data);
-      if (!text) throw new Error("OpenRouter returned an empty AI response.");
+      if (status === 429) break;
 
-      return { text, model: data?.model || selectedModel, attempts: attempt };
-    } catch (error) {
-      lastError = error;
-      const status = Number(error?.status || 0);
+      const retryable = !status || [408, 409, 425, 500, 502, 503, 504].includes(status);
+      if (attempt < maxAttempts && retryable) {
+        await new Promise(resolve => setTimeout(resolve, 800));
+        continue;
+      }
+      break;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
-      if (status === 429) break;
-
-      const retryable = !status || [408, 409, 425, 500, 502, 503, 504].includes(status);
-      if (attempt < maxAttempts && retryable) {
-        const wait = Math.min(1200, 350 * attempt);
-        await new Promise(resolve => setTimeout(resolve, wait));
-        continue;
-      }
-      break;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  throw lastError || new Error("AI service temporarily unavailable.");
+  throw lastError || new Error("AI service temporarily unavailable.");
 }
 
 function extractCareer(prompt, suppliedCareer = "") {
-  if (cleanText(suppliedCareer)) return cleanText(suppliedCareer);
-  const p = cleanText(prompt);
-  const patterns = [
-    /EXACT CAREER\s*:\s*["“']?(.+?)["”']?(?:\n|$)/i,
-    /non[- ]negotiable(?: career)?\s*[:\-]\s*["“']?(.+?)["”']?(?:\n|$)/i,
-    /exact career\s*[:\-]\s*["“']?(.+?)["”']?(?:\n|$)/i,
-    /career\s+of\s+["“']?(.+?)["”']?(?:\s+in India|\n|$)/i,
-    /career\s*[:\-]\s*["“']?(.+?)["”']?(?:\n|$)/i
-  ];
-  for (const re of patterns) {
-    const m = p.match(re);
-    if (m?.[1]) return cleanText(m[1]).replace(/[.,;]+$/, "");
-  }
-  return "";
-}
-
-function sourcePriority(url) {
-  const u = String(url || "").toLowerCase();
-  let score = 20;
-
-  if (u.includes("nmc.org.in")) score = 120;
-  else if (u.includes("natboard.edu.in")) score = 118;
-  else if (u.includes("nbe.edu.in")) score = 118;
-  else if (u.includes("mcc.nic.in")) score = 116;
-  else if (u.includes("aiimsexams.ac.in")) score = 114;
-  else if (u.includes("aiims.edu")) score = 112;
-  else if (u.includes("apollohospitals.com")) score = 95;
-  else if (u.includes("fortishealthcare.com")) score = 93;
-  else if (u.includes("maxhealthcare.in")) score = 93;
-  else if (u.includes("medanta.org")) score = 93;
-  else if (u.includes("in.indeed.com")) score = 88;
-  else if (u.includes("naukri.com")) score = 82;
-  else if (u.includes("linkedin.com")) score = 70;
-  else if (u.includes("who.int")) score = 65;
-  else if (u.includes(".gov.in")) score = 100;
-  else if (u.includes(".ac.in")) score = 90;
-
-  return score;
+  if (cleanText(suppliedCareer)) return cleanText(suppliedCareer);
+  const p = cleanText(prompt);
+  const patterns = [
+    /EXACT CAREER\s*:\s*["“']?(.+?)["”']?(?:\n|$)/i,
+    /career\s*[:\-]\s*["“']?(.+?)["”']?(?:\n|$)/i,
+    /career\s+of\s+["“']?(.+?)["”']?(?:\s+in India|\n|$)/i
+  ];
+  for (const re of patterns) {
+    const m = p.match(re);
+    if (m?.[1]) return cleanText(m[1]).replace(/[.,;]+$/, "");
+  }
+  return "";
 }
 
 async function searchWeb(query) {
-  try {
-    const url = "https://www.bing.com/search?format=rss&q=" + encodeURIComponent(query);
-    const r = await fetch(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 CareerMitra/1.0"
-      }
-    });
-    if (!r.ok) return [];
+  try {
+    const url = "https://html.duckduckgo.com/html/?q=" + encodeURIComponent(query);
+    const r = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      }
+    });
+    if (!r.ok) return [];
 
-    const xml = await r.text();
-    const items = xml.match(/<item>[\s\S]*?<\/item>/gi) || [];
-
-    return items.slice(0, 10).map(item => {
-      const title = item.match(/<title>([\s\S]*?)<\/title>/i)?.[1] || "";
-      const link = item.match(/<link>([\s\S]*?)<\/link>/i)?.[1] || "";
-      const snippet = item.match(/<description>([\s\S]*?)<\/description>/i)?.[1] || "";
-      const clean = v => String(v || "")
-        .replace(/<!\[CDATA\[\vert{}\]\]>/g, "")
-        .replace(/&amp;/g, "&")
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/<[^>]+>/g, " ")
-        .trim();
-
-      return {
-        title: clean(title),
-        url: clean(link),
-        snippet: clean(snippet)
-      };
-    }).filter(x => x.title && /^https?:\/\//i.test(x.url));
-  } catch (_) {
-    return [];
-  }
+    const html = await r.text();
+    const results = [];
+    const snippetRegex = /<a class="result__snippet[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/gi;
+    const titleRegex = /<a class="result__url[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/gi;
+    
+    // Quick regex match for results
+    const rawMatches = html.match(/<div class="result__body">[\s\S]*?<\/div>/gi) || [];
+    for (const block of rawMatches.slice(0, 8)) {
+      const titleMatch = block.match(/<a class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i);
+      const snipMatch = block.match(/<a class="result__snippet"[^>]*>([\s\S]*?)<\/a>/i);
+      if (titleMatch && titleMatch[1]) {
+        let link = titleMatch[1];
+        if (link.includes("uddg=")) {
+          const rawUrl = link.split("uddg=")[1]?.split("&")[0];
+          if (rawUrl) link = decodeURIComponent(rawUrl);
+        }
+        const clean = v => String(v || "").replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").trim();
+        results.push({
+          title: clean(titleMatch[2]),
+          url: clean(link),
+          snippet: clean(snipMatch ? snipMatch[1] : "")
+        });
+      }
+    }
+    return results.filter(x => /^https?:\/\//i.test(x.url));
+  } catch (_) {
+    return [];
+  }
 }
 
 function researchPrompt(career, evidence) {
-  return `
-You are CareerMitra's senior India-focused career research analyst.
+  return `You are CareerMitra's senior career research analyst specializing in the Indian job and education market.
 
 EXACT CAREER TO RESEARCH:
 ${career}
 
-DO NOT CHANGE THIS CAREER.
-If the input says a specialization, research that specialization exactly.
+COUNTRY CONTEXT: India
 
-COUNTRY:
-India
+EVIDENCE RETRIEVED FROM SEARCH:
+${evidence || "Rely on authoritative and established market facts in India."}
 
-LIVE WEB EVIDENCE:
-${evidence || "No usable live source was retrieved."}
-
-Return ONLY one valid JSON object using exactly these keys:
+Return ONLY valid JSON matching this exact structure:
 {
-  "career":"exact career name",
-  "what_it_involves":"clear day-to-day explanation",
-  "pros":["..."],
-  "cons":["..."],
-  "pay_india":"current India earning picture with experience/location/employer context",
-  "market_requirements":["..."],
-  "demand":"current India demand with careful evidence-based context",
-  "future_growth":"future outlook, opportunities and risks",
-  "step_by_step_path":["..."],
-  "academic_education":["..."],
-  "vocational_diploma":["..."],
-  "certifications":["..."],
-  "job_ready_skills":["..."],
-  "alternatives":["..."],
-  "barriers":["..."],
-  "rewards":["..."],
-  "public_discussion_themes":["..."],
-  "student_fit":"only discuss fit if student data was actually supplied; otherwise say that student-specific fit needs the student's data",
-  "family_concerns_addressed":["..."],
-  "sources":[{"title":"...","url":"...","why_relevant":"..."}]
-}
-
-QUALITY REQUIREMENTS:
-1. EXACT CAREER: Do not substitute a nearby career. For example, if the career is "orthopedic surgeon with spine speciality", keep spine specialization central throughout the answer.
-2. INDIA FIRST: Prioritize NMC, NBEMS/NBME, MCC, AIIMS, government sources, Indian medical institutions, established Indian hospitals and reputable India job sources.
-3. MEDICAL PATHWAY: Where applicable, clearly separate MBBS, registration, postgraduate specialty training, and advanced fellowship/subspecialty training. Do not imply that a fellowship is always legally mandatory unless a source supports that claim.
-4. PAY: Never invent a precise salary. Use source-supported ranges or explain why a reliable range cannot be established. Mention experience, city, employer and private/public practice differences where relevant.
-5. DEMAND: Do not call a career "high demand" merely because jobs exist. Explain the evidence and limitations.
-6. MARKET REQUIREMENTS: Give actual qualifications, skills, registration/licensing, experience and employer expectations supported by evidence.
-7. PATH: Give a practical sequence a student can follow. Include entrance/training milestones when supported.
-8. ALTERNATIVES: Give genuinely comparable alternatives, not random lower-level jobs.
-9. PUBLIC DISCUSSION: Summarize recurring discussion themes only. Do not present Reddit/forums as statistical evidence.
-10. SOURCES: Only use URLs present in the supplied evidence. Never manufacture a URL.
-11. COMPLETENESS: Do not leave the major fields empty just because one source is weak. Use reliable professional context for stable facts and clearly mark anything that could not be verified currently.
-12. NO FILLER: Avoid sentences like "opportunities should be evaluated" unless the evidence genuinely cannot answer the field.
-13. JSON ONLY. No markdown fences and no explanation outside JSON.
-`;
-}
-
-function normalizeResearch(data, career, sources) {
-  const d = data && typeof data === "object" ? { ...data } : {};
-  d.career = career;
-
-  const aliases = {
-    what_it_involves: ["role_description", "description"],
-    pay_india: ["earning_reality_india", "salary"],
-    market_requirements: ["requirements", "skills"],
-    future_growth: ["growth_future", "future"],
-    step_by_step_path: ["career_path", "path"],
-    alternatives: ["same_level_alternatives"],
-    barriers: ["struggles_barriers"],
-    rewards: ["rewards_beyond_money"],
-    public_discussion_themes: ["anecdotal_reviews", "public_discussion"],
-    family_concerns_addressed: ["family_concerns"]
-  };
-
-  for (const [key, list] of Object.entries(aliases)) {
-    if (d[key] == null || d[key] === "") {
-      for (const a of list) {
-        if (d[a] != null && d[a] !== "") {
-          d[key] = d[a];
-          break;
-        }
-      }
-    }
-  }
-
-  const arrays = [
-    "pros", "cons", "market_requirements", "step_by_step_path",
-    "academic_education", "vocational_diploma", "certifications",
-    "job_ready_skills", "alternatives", "barriers", "rewards",
-    "public_discussion_themes", "family_concerns_addressed", "sources"
-  ];
-
-  for (const k of arrays) {
-    if (!Array.isArray(d[k])) d[k] = d[k] ? [String(d[k])] : [];
-  }
-
-  if (Array.isArray(sources) && sources.length) {
-    d.sources = sources.map(x => ({
-      title: cleanText(x.title),
-      url: cleanText(x.url),
-      snippet: cleanText(x.snippet),
-      why_relevant: "Live source retrieved for this career research."
-    }));
-  } else if (!d.sources.length) {
-    d.sources = [];
-  }
-
-  if (!d.what_it_involves) d.what_it_involves = `The ${career} role involves applying relevant knowledge and practical skills to solve problems and deliver useful outcomes.`;
-  if (!d.pay_india) d.pay_india = "Current India salary could not be reliably verified from the retrieved sources.";
-  if (!d.demand) d.demand = "Current demand could not be reliably verified from the retrieved sources.";
-  if (!d.future_growth) d.future_growth = "Future growth could not be reliably verified from the retrieved sources.";
-
-  return d;
-}
-
-function webFallbackResearch(career, sources) {
-  const usable = sources.slice(0, 12);
-  const sourceList = usable.map(x => ({
-    title: x.title,
-    url: x.url,
-    snippet: x.snippet,
-    why_relevant: "Retrieved as live evidence for this exact career in India."
-  }));
-
-  const text = usable.map(x => `${x.title} ${x.snippet}`).join(" ");
-  const medical = /surgeon|doctor|physician|orthopedic|orthopaedic|cardio|neuro|radiolog|dermatolog|anesthes|anaesthes|patholog|pediatric|paediatric|oncolog|dentist/i.test(career);
-  const spine = /spine|spinal/i.test(career);
-
-  const path = medical
-    ? [
-        "Complete the required undergraduate medical education pathway in India (typically MBBS for a medical specialist career).",
-        "Complete the applicable compulsory registration/internship requirements under the current Indian regulatory framework.",
-        "Enter the relevant postgraduate specialty pathway through the currently applicable entrance and counselling process.",
-        spine ? "After orthopaedic specialty training, build advanced spine expertise through appropriate supervised training/fellowship where applicable." : "Build supervised specialist clinical and procedural experience.",
-        "Continue professional development, evidence-based practice and any applicable registration/credential requirements."
-      ]
-    : [
-        `Build the academic foundation required for ${career}.`,
-        "Complete the relevant higher education or professional training pathway.",
-        "Build practical skills through projects, supervised work or internships where applicable.",
-        "Add relevant certifications only when they are valued for the target role.",
-        "Gain experience and continue skill development as the market changes."
-      ];
-
-  const education = medical
-    ? [
-        "Medical undergraduate education is the foundation for the specialist pathway.",
-        "Postgraduate specialty training is normally required for specialist medical practice.",
-        spine ? "Advanced spine-focused training may be pursued after the core orthopaedic pathway; exact requirements vary by institution and should be checked against current rules." : "The exact specialty qualification should be verified against current NMC/NBEMS and institution-specific requirements."
-      ]
-    : [
-        "The required academic qualification depends on the exact role and employer.",
-        "Current course, university and employer requirements should be checked before choosing a programme."
-      ];
-
-  const requirements = usable.slice(0, 8).map(x =>
-    `${x.title}${x.snippet ? ` — ${x.snippet}` : ""}`
-  );
-
-  const hasSalaryEvidence = /salary|lakh|lpa|₹|rs\.?\s?\d|inr/i.test(text);
-  const hasTrainingEvidence = /mbbs|ms |dnb|fellowship|registration|nmc|nbems|residency/i.test(text);
-
-  return normalizeResearch({
-    career,
-    what_it_involves: medical
-      ? `${career} is a specialist medical career involving patient assessment, diagnosis, treatment planning, procedures/surgery where applicable, follow-up and continued professional learning. The exact scope depends on the specialist's training and practice setting.`
-      : `${career} involves applying the knowledge and practical skills specific to the role, working with relevant tools or systems, solving real problems and delivering outcomes for an employer or client.`,
-    pros: medical
-      ? [
-          "High level of specialised professional responsibility.",
-          "Potential to make a direct impact on patient outcomes.",
-          "Scope to build deep expertise and, depending on the career, teaching/research or private-practice opportunities."
-        ]
-      : [
-          "Opportunity to develop specialised expertise.",
-          "Potential for multiple employer or industry pathways as experience grows.",
-          "Scope for continued learning and progression."
-        ],
-    cons: medical
-      ? [
-          "Long and demanding training pathway.",
-          "High responsibility and the need for continuous skill development.",
-          "Workload, location, employer and practice setting can strongly affect lifestyle."
-        ]
-      : [
-          "Competition and entry requirements vary by employer.",
-          "Skills need to be updated as the field changes.",
-          "Early-career outcomes can vary significantly by location and employer."
-        ],
-    pay_india: hasSalaryEvidence
-      ? "The live results contain salary/earning references, but they should be interpreted by experience, city, employer and practice type. Exact figures are not asserted here without a reliable cross-source salary dataset."
-      : "No sufficiently reliable current India salary range was established from the retrieved sources; salary varies substantially by experience, location, employer and practice type.",
-    market_requirements: requirements,
-    demand: usable.length
-      ? `Live India search results were found for ${career}. They show current activity around the career, but search-result volume alone is not a national demand statistic. Demand should be interpreted with location, employer, experience and specialization in mind.`
-      : `No usable live India sources were retrieved for ${career}.`,
-    future_growth: medical
-      ? "The long-term outlook depends on population healthcare needs, specialist capacity, technology, referral patterns and the balance between public and private healthcare. Current growth should be treated as an evidence-based judgement rather than a guaranteed outcome."
-      : "Future growth depends on industry demand, technology, employer needs and the ability to keep skills current.",
-    step_by_step_path: path,
-    academic_education: education,
-    vocational_diploma: medical ? [] : ["Diploma/vocational routes may be relevant only if they are explicitly accepted for the target role."],
-    certifications: medical
-      ? [
-          "Current registration and specialist qualification requirements should be verified with the applicable Indian authority.",
-          hasTrainingEvidence ? "The retrieved sources contain training/qualification references; verify the exact current pathway before making an education decision." : "No specific certification claim is made because the retrieved evidence was insufficient."
-        ]
-      : ["Choose certifications that are explicitly relevant to the target job rather than collecting certificates without practical experience."],
-    job_ready_skills: medical
-      ? [
-          "Clinical assessment and decision-making",
-          "Relevant procedural/surgical skills under appropriate supervision",
-          "Patient and family communication",
-          "Imaging/diagnostic interpretation where relevant",
-          "Evidence-based practice",
-          "Teamwork and multidisciplinary coordination"
-        ]
-      : [
-          "Role-specific technical skills",
-          "Communication",
-          "Problem solving",
-          "Practical project/work evidence",
-          "Interview and workplace skills"
-        ],
-    alternatives: medical
-      ? [
-          "Related specialist pathways within the same broad medical field",
-          "Academic/teaching or research pathways after specialist training",
-          "Hospital-based clinical roles with adjacent expertise"
-        ]
-      : [],
-    barriers: medical
-      ? [
-          "Long education and training timeline",
-          "Competitive entry into specialist training",
-          "High professional responsibility",
-          "Need for continuous learning and credential maintenance"
-        ]
-      : [
-          "Competition for entry-level roles",
-          "Need for demonstrable practical skills",
-          "Changing technology and employer expectations"
-        ],
-    rewards: medical
-      ? [
-          "Specialist expertise",
-          "Potential to improve patient outcomes",
-          "Professional growth and teaching/research opportunities",
-          "Potential to develop a specialised practice"
-        ]
-      : [
-          "Expertise and professional growth",
-          "Potential for progression into higher-responsibility roles",
-          "Opportunity to work across different organisations or industries"
-        ],
-    public_discussion_themes: [],
-    student_fit: "Student-specific fit cannot be safely inferred from career research alone; CareerMitra should combine this research with the student's Test Zone and Personal Vault data.",
-    family_concerns_addressed: [],
-    sources: sourceList
-  }, career, sourceList);
-}
-
-function researchNeedsRepair(data) {
-  if (!data || typeof data !== "object") return true;
-  const required = [
-    "career",
-    "what_it_involves",
-    "pros",
-    "cons",
-    "pay_india",
-    "market_requirements",
-    "demand",
-    "future_growth",
-    "step_by_step_path",
-    "academic_education",
-    "job_ready_skills",
-    "alternatives",
-    "barriers",
-    "rewards",
-    "sources"
-  ];
-  const missing = required.filter(k => data[k] == null || data[k] === "" || (Array.isArray(data[k]) && data[k].length === 0));
-  return missing.length >= 4;
-}
-
-/* ========================= TEST ZONE AI ENGINE ========================= */
-
-function testArr(v) {
-  if (Array.isArray(v)) return v.map(x => cleanText(x)).filter(Boolean);
-  if (typeof v === "string") return v.split(/[,;\n]/).map(x => cleanText(x)).filter(Boolean);
-  return [];
-}
-
-function normalizeTestVault(v = {}) {
-  return {
-    interests: testArr(v.interests),
-    hobbies: testArr(v.hobbies),
-    likings: testArr(v.likings),
-    strongSubjects: testArr(v.strongSubjects ?? v.subjects),
-    preferredRoles: testArr(v.preferredRoles ?? v.preferredRolesInPriorityOrder ?? v.roles),
-    nonNegotiable: cleanText(v.nonNegotiable ?? v.nonNegotiableCareer ?? v.nonnegotiable),
-    chosenField: cleanText(v.chosenField ?? v.field),
-    whyField: cleanText(v.whyField ?? v.reasonForField),
-    whyNotOthers: cleanText(v.whyNotOthers ?? v.reasonNotOtherFields),
-    alternatives: testArr(v.alternatives ?? v.alternativesConsidered),
-    skills: testArr(v.skills ?? v.verifiedSkills),
-    stage: cleanText(v.stage ?? v.educationStage)
-  };
-}
-
-const TEST_PLAN = {
-  "Personality": 4,
-  "Situation reaction": 4,
-  "Interests & likings": 4,
-  "Basic intelligence": 4,
-  "Strong subject / skills": 4,
-  "Career opinion": 5
-};
-
-function testVaultEvidence(v) {
-  const rows = [];
-  const add = (label, values) => {
-    for (const x of testArr(values)) rows.push(`${label}: ${x}`);
-  };
-  add("Interest", v.interests);
-  add("Hobby", v.hobbies);
-  add("Liking", v.likings);
-  add("Strong subject", v.strongSubjects);
-  add("Preferred role", v.preferredRoles);
-  add("Skill", v.skills);
-  add("Alternative", v.alternatives);
-  if (v.nonNegotiable) rows.push(`Non-negotiable career: ${v.nonNegotiable}`);
-  if (v.chosenField) rows.push(`Chosen field: ${v.chosenField}`);
-  if (v.whyField) rows.push(`Reason for field: ${v.whyField}`);
-  if (v.whyNotOthers) rows.push(`Reason not other fields: ${v.whyNotOthers}`);
-  return rows;
-}
-
-function buildServerTestPrompt(vault, stage = "student") {
-  const v = normalizeTestVault(vault);
-  const plan = Object.entries(TEST_PLAN).map(([k, n]) => `${k}: ${n}`).join(", ");
-  const evidence = testVaultEvidence(v).join("\n") || "General student profile";
-
-  return `You are CareerMitra's Test Zone AI engine.
-Generate a 25-question personalized career assessment test for a student in stage "${stage}".
-
-STUDENT PERSONAL VAULT:
-${evidence}
-
-CATEGORIES REQUIRED:
-${plan} (Total: 25)
-
-RULES:
-1. Ground questions directly in the student's interests, subjects, or preferred roles.
-2. For "Basic intelligence", create simple logical or situational reasoning questions where exactly one option has "correct": true.
-3. For all other categories, every option must have a Holland code trait ("R", "I", "A", "S", "E", or "C"). Each question should use 4 different traits.
-4. Keep question text and option text concise to avoid timeouts.
-5. Return ONLY a single JSON object with a "questions" key containing the array of 25 question objects.
-
-JSON STRUCTURE:
-{
-  "questions": [
-    {
-      "cat": "Personality",
-      "basedOn": "Vault interest or general reasoning",
-      "q": "Concise question statement?",
-      "o": [
-        {"text": "Option 1", "trait": "R"},
-        {"text": "Option 2", "trait": "I"},
-        {"text": "Option 3", "trait": "A"},
-        {"text": "Option 4", "trait": "S"}
-      ]
-    }
-  ]
+  "career": "${career}",
+  "what_it_involves": "Accurate day-to-day description of what the role actually does in India.",
+  "pros": ["Major realistic advantage 1", "Major realistic advantage 2", "Major realistic advantage 3"],
+  "cons": ["Major genuine trade-off or challenge 1", "Challenge 2"],
+  "pay_india": "Realistic fresher, mid-level, and senior salary ranges in India (in LPA) with clear employer/tier context.",
+  "market_requirements": ["Required degree", "Key technical/domain skills", "Licenses or certifications if any"],
+  "demand": "Current realistic market hiring outlook in India.",
+  "future_growth": "5 to 10 year outlook, automation impact, and emerging trends.",
+  "step_by_step_path": ["Stage 1: School/Foundations", "Stage 2: Undergraduate/Degree", "Stage 3: Entry into industry", "Stage 4: Specialization/Growth"],
+  "same_level_alternatives": ["Alternative career 1", "Alternative career 2"],
+  "struggles_barriers": ["Key barrier to entry in India"],
+  "rewards_beyond_money": ["Intellectual or social satisfaction"],
+  "public_discussion_themes": ["Common discussions among practitioners regarding work-life balance and learning curve"],
+  "sources": [{"title": "Source name", "url": "https://..."}]
 }`;
 }
 
-function repairAndNormalizeQuestions(data) {
-  let questions = [];
-  if (data && Array.isArray(data.questions)) questions = data.questions;
-  else if (data?.data && Array.isArray(data.data.questions)) questions = data.data.questions;
-  else if (data?.result && Array.isArray(data.result.questions)) questions = data.result.questions;
-  else if (Array.isArray(data)) questions = data;
-
-  if (!questions.length) return null;
-
-  const validCategories = Object.keys(TEST_PLAN);
-  const traitPool = ["R", "I", "A", "S", "E", "C"];
-  const sanitized = [];
-
-  for (let i = 0; i < questions.length; i++) {
-    const rawQ = questions[i];
-    if (!rawQ || typeof rawQ !== "object" || !cleanText(rawQ.q)) continue;
-
-    const cat = validCategories.includes(rawQ.cat)
-      ? rawQ.cat
-      : validCategories[i % validCategories.length];
-
-    let options = Array.isArray(rawQ.o) ? rawQ.o.filter(Boolean) : [];
-    if (options.length < 2) continue;
-
-    // Pad or trim options to exactly 4 items
-    while (options.length < 4) {
-      options.push({ text: `Alternative choice ${options.length + 1}` });
-    }
-    options = options.slice(0, 4);
-
-    const isFactual = cat === "Basic intelligence" || options.some(o => o && "correct" in o);
-
-    if (isFactual) {
-      const hasTrue = options.some(o => o.correct === true);
-      options = options.map((opt, idx) => ({
-        text: cleanText(opt.text || `Option ${idx + 1}`),
-        correct: hasTrue ? Boolean(opt.correct) : idx === 0
-      }));
-      if (!options.some(o => o.correct)) options[0].correct = true;
-    } else {
-      const usedTraits = new Set();
-      options = options.map((opt, idx) => {
-        let trait = String(opt.trait || "").toUpperCase();
-        if (!traitPool.includes(trait) || usedTraits.has(trait)) {
-          trait = traitPool.find(t => !usedTraits.has(t)) || traitPool[idx % traitPool.length];
-        }
-        usedTraits.add(trait);
-        return {
-          text: cleanText(opt.text || `Option ${idx + 1}`),
-          trait
-        };
-      });
-    }
-
-    sanitized.push({
-      id: rawQ.id || `q_${sanitized.length + 1}`,
-      cat,
-      basedOn: cleanText(rawQ.basedOn) || "Personal Vault",
-      q: cleanText(rawQ.q),
-      o: options
-    });
-  }
-
-  // Accept generation if at least 18 questions are valid
-  return sanitized.length >= 18 ? sanitized : null;
+function normalizeResearch(data, career, sources) {
+  const d = data && typeof data === "object" ? { ...data } : {};
+  d.career = career;
+  if (!d.what_it_involves) d.what_it_involves = `The ${career} role involves applying specialized knowledge to solve domain-specific problems.`;
+  if (!Array.isArray(d.pros)) d.pros = ["High professional scope", "Transferable skills"];
+  if (!Array.isArray(d.cons)) d.cons = ["Demanding learning curve", "Competitive entry"];
+  if (!d.pay_india) d.pay_india = "Competitive market rates based on experience and tier of organization.";
+  if (!Array.isArray(d.market_requirements)) d.market_requirements = ["Relevant bachelor's degree", "Industry skills"];
+  if (!d.demand) d.demand = "Steady market demand for qualified professionals.";
+  if (!d.future_growth) d.future_growth = "Positive growth driven by industry modernization.";
+  if (!Array.isArray(d.step_by_step_path)) d.step_by_step_path = ["Complete foundational studies", "Acquire degree", "Build portfolio & enter industry"];
+  if (!Array.isArray(d.same_level_alternatives)) d.same_level_alternatives = [];
+  if (!Array.isArray(d.struggles_barriers)) d.struggles_barriers = [];
+  if (!Array.isArray(d.rewards_beyond_money)) d.rewards_beyond_money = [];
+  if (!Array.isArray(d.public_discussion_themes)) d.public_discussion_themes = [];
+  
+  if (Array.isArray(sources) && sources.length) {
+    d.sources = sources.slice(0, 6).map(s => ({
+      title: s.title || "Reference",
+      url: s.url,
+      snippet: s.snippet || ""
+    }));
+  } else if (!Array.isArray(d.sources)) {
+    d.sources = [];
+  }
+  return d;
 }
 
-async function generateServerTest(vault, stage) {
-  const prompt = buildServerTestPrompt(vault, stage);
-  let ai;
+/* ================= TEST ZONE NORMALIZER ================= */
+const TEST_PLAN = {
+  "Personality": 4,
+  "Situation reaction": 4,
+  "Interests & likings": 4,
+  "Basic intelligence": 4,
+  "Strong subject / skills": 4,
+  "Career opinion": 5
+};
 
-  try {
-    ai = await requestAI(prompt, false, false, true);
-  } catch (error) {
-    error.testGenerationFailed = true;
-    throw error;
-  }
+function normalizeTestVault(v = {}) {
+  const cleanArr = a => Array.isArray(a) ? a.map(cleanText).filter(Boolean) : (typeof a === "string" ? a.split(/[,;\n]/).map(cleanText).filter(Boolean) : []);
+  return {
+    interests: cleanArr(v.interests),
+    hobbies: cleanArr(v.hobbies),
+    likings: cleanArr(v.likings),
+    strongSubjects: cleanArr(v.strongSubjects ?? v.subjects),
+    preferredRoles: cleanArr(v.preferredRoles ?? v.preferredRolesInPriorityOrder ?? v.roles),
+    nonNegotiable: cleanText(v.nonNegotiable ?? v.nonNegotiableCareer ?? v.nonnegotiable),
+    chosenField: cleanText(v.chosenField ?? v.field),
+    whyField: cleanText(v.whyField ?? v.reasonForField),
+    whyNotOthers: cleanText(v.whyNotOthers ?? v.reasonNotOtherFields),
+    alternatives: cleanArr(v.alternatives ?? v.alternativesConsidered),
+    skills: cleanArr(v.skills ?? v.verifiedSkills),
+    stage: cleanText(v.stage ?? v.educationStage)
+  };
+}
 
-  const rawData = parseJSON(ai.text);
-  const sanitizedQuestions = repairAndNormalizeQuestions(rawData);
+function repairAndNormalizeQuestions(data) {
+  let questions = [];
+  if (data && Array.isArray(data.questions)) questions = data.questions;
+  else if (data?.data && Array.isArray(data.data.questions)) questions = data.data.questions;
+  else if (Array.isArray(data)) questions = data;
 
-  if (!sanitizedQuestions) {
-    const e = new Error("AI generated an invalid Test Zone payload.");
-    e.testValidationFailed = true;
-    e.validationErrors = ["AI returned malformed JSON or insufficient questions"];
-    throw e;
-  }
+  if (!questions.length) return null;
 
-  return {
-    data: { questions: sanitizedQuestions },
-    model: ai.model,
-    attempts: ai.attempts
-  };
+  const validCategories = Object.keys(TEST_PLAN);
+  const traitPool = ["R", "I", "A", "S", "E", "C"];
+  const sanitized = [];
+
+  for (let i = 0; i < questions.length; i++) {
+    const rawQ = questions[i];
+    if (!rawQ || typeof rawQ !== "object" || !cleanText(rawQ.q)) continue;
+
+    const cat = validCategories.includes(rawQ.cat) ? rawQ.cat : validCategories[i % validCategories.length];
+    let options = Array.isArray(rawQ.o) ? rawQ.o.filter(Boolean) : [];
+    if (options.length < 2) continue;
+
+    while (options.length < 4) {
+      options.push({ text: `Alternative choice ${options.length + 1}` });
+    }
+    options = options.slice(0, 4);
+
+    const isFactual = cat === "Basic intelligence" || options.some(o => o && "correct" in o);
+
+    if (isFactual) {
+      const hasTrue = options.some(o => o.correct === true);
+      options = options.map((opt, idx) => ({
+        text: cleanText(opt.text || `Option ${idx + 1}`),
+        correct: hasTrue ? Boolean(opt.correct) : idx === 0
+      }));
+      if (!options.some(o => o.correct)) options[0].correct = true;
+    } else {
+      const usedTraits = new Set();
+      options = options.map((opt, idx) => {
+        let trait = String(opt.trait || "").toUpperCase();
+        if (!traitPool.includes(trait) || usedTraits.has(trait)) {
+          trait = traitPool.find(t => !usedTraits.has(t)) || traitPool[idx % traitPool.length];
+        }
+        usedTraits.add(trait);
+        return { text: cleanText(opt.text || `Option ${idx + 1}`), trait };
+      });
+    }
+
+    sanitized.push({
+      id: rawQ.id || `q_${sanitized.length + 1}`,
+      cat,
+      basedOn: cleanText(rawQ.basedOn) || "Personal Vault",
+      q: cleanText(rawQ.q),
+      o: options
+    });
+  }
+
+  return sanitized.length >= 18 ? sanitized : null;
 }
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ ok: false, error: "Method not allowed" });
-  }
+  if (req.method !== "POST") {
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
+  }
 
-  try {
-    const body = typeof req.body === "string"
-      ? JSON.parse(req.body || "{}")
-      : (req.body || {});
+  try {
+    const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
+    const prompt = cleanText(body.prompt);
+    const webSearch = body.webSearch === true;
+    const suppliedCareer = cleanText(body.career);
 
-    const prompt = cleanText(body.prompt);
-    const webSearch = body.webSearch === true;
-    const suppliedCareer = cleanText(body.career);
+    if (!prompt) {
+      return res.status(400).json({ ok: false, error: "Missing prompt" });
+    }
 
-    if (!prompt) {
-      return res.status(400).json({ ok: false, error: "Missing prompt" });
-    }
+    const requestedPurpose = cleanText(body.purpose);
+    const isTest = requestedPurpose === "student test generation" || body.testZone === true;
 
-    const requestedPurpose = cleanText(body.purpose);
-    const isTest = requestedPurpose === "student test generation" || body.testZone === true;
+    // 1. TEST ZONE ROUTE
+    if (isTest) {
+      const vault = normalizeTestVault(body.vault || {});
+      const stage = cleanText(body.stage || vault.stage || "student");
+      const planStr = Object.entries(TEST_PLAN).map(([k, n]) => `${k}: ${n}`).join(", ");
+      
+      const testPrompt = `You are CareerMitra's Test Zone engine. Create a 25-question career test for a student in stage "${stage}".
+PERSONAL VAULT DATA:
+${JSON.stringify(vault)}
+CATEGORIES: ${planStr}
+RULES:
+- Return ONLY JSON matching: {"questions":[{"cat":"Category","basedOn":"Vault item","q":"Question","o":[{"text":"Opt","trait":"R"}]}]}
+- For Basic intelligence, use options with {"text":"Opt","correct":true/false}.`;
 
-    if (isTest) {
-      const vault = normalizeTestVault(body.vault || {});
-      const hasVault = testVaultEvidence(vault).length > 0;
-      if (!hasVault) {
-        return res.status(400).json({
-          ok: false,
-          ai: false,
-          fallbackUsed: false,
-          aiFailed: true,
-          fallbackAllowed: false,
-          error: "Personal Vault data is required for Test Zone generation."
-        });
-      }
+      const ai = await requestAI(testPrompt, false, false, true);
+      const parsed = parseJSON(ai.text);
+      const sanitized = repairAndNormalizeQuestions(parsed);
 
-      try {
-        const stage = cleanText(body.stage || vault.stage || "student");
-        const generated = await generateServerTest(vault, stage);
-        return res.status(200).json({
-          ok: true,
-          ai: true,
-          fallbackUsed: false,
-          data: generated.data,
-          model: generated.model,
-          attempts: generated.attempts,
-          purpose: "student test generation",
-          serverValidated: true
-        });
-      } catch (error) {
-        console.error("CareerMitra Test Zone AI failed", error);
-        return res.status(503).json({
-          ok: false,
-          ai: false,
-          fallbackUsed: false,
-          aiFailed: true,
-          fallbackAllowed: true,
-          testValidationFailed: Boolean(error?.testValidationFailed),
-          validationErrors: error?.validationErrors || [],
-          rateLimited: Number(error?.status) === 429,
-          retryAfter: error?.retryAfter || null,
-          error: cleanText(error?.message || "Test Zone AI temporarily unavailable.")
-        });
-      }
-    }
+      if (!sanitized) {
+        return res.status(503).json({ ok: false, error: "Failed to generate valid test questions." });
+      }
 
-    let finalPrompt = prompt;
-    let sources = [];
-    let career = suppliedCareer || extractCareer(prompt);
+      return res.status(200).json({
+        ok: true,
+        ai: true,
+        data: { questions: sanitized },
+        serverValidated: true
+      });
+    }
 
-    if (webSearch) {
-      if (!career) {
-        return res.status(400).json({
-          ok: false,
-          error: "Could not determine the exact career."
-        });
-      }
+    // 2. LIVE WEB RESEARCH ROUTE
+    if (webSearch) {
+      const career = suppliedCareer || extractCareer(prompt);
+      if (!career) {
+        return res.status(400).json({ ok: false, error: "Could not determine exact career to research." });
+      }
 
-      const queries = [
-        `"${career}" India qualifications education pathway site:nmc.org.in OR site:natboard.edu.in OR site:aiimsexams.ac.in`,
-        `"${career}" India specialist training fellowship site:apollohospitals.com OR site:fortishealthcare.com OR site:medanta.org`,
-        `"${career}" India jobs salary site:in.indeed.com OR site:naukri.com`,
-        `"${career}" India demand jobs market`,
-        `"${career}" India future growth technology healthcare`,
-        `"${career}" India registration license requirements site:nmc.org.in OR site:gov.in`,
-        `"${career}" India professional association fellowship`,
-        `"${career}" India day to day responsibilities`,
-        `"${career}" India hospital specialist department`,
-        `"${career}" India training pathway career requirements`,
-        `"${career}" India salary experience private hospital government hospital`,
-        `${career} India current clinical practice patient treatment specialization`
-      ];
+      const searchQuery = `"${career}" career in India scope salary qualification`;
+      const sources = await searchWeb(searchQuery);
+      const evidence = sources.map((s, i) => `[${i + 1}] ${s.title}: ${s.snippet} (${s.url})`).join("\n");
 
-      const groups = await Promise.all(queries.map(searchWeb));
-      const seen = new Set();
-      const badCountry = /melbourne|florida|australia|canada|united states|new york|california|uk orthopedic surgeon jobs/i;
+      const aiRes = await requestAI(researchPrompt(career, evidence), true);
+      const parsed = parseJSON(aiRes.text);
+      const normalized = normalizeResearch(parsed, career, sources);
 
-      sources = groups.flat().filter(x => {
-        if (!x.url || seen.has(x.url)) return false;
-        const combined = `${x.title} ${x.snippet}`;
-        if (badCountry.test(combined) && !/india|indian/i.test(combined)) return false;
-        seen.add(x.url);
-        return true;
-      })
-      .sort((a, b) => sourcePriority(b.url) - sourcePriority(a.url))
-      .slice(0, 20);
+      return res.status(200).json({
+        ok: true,
+        ai: true,
+        data: normalized,
+        sources: normalized.sources
+      });
+    }
 
-      const evidence = sources.map((x, i) =>
-        `[SOURCE ${i + 1}]\nTITLE: ${x.title}\nURL: ${x.url}\nSNIPPET: ${x.snippet}`
-      ).join("\n\n");
+    // 3. COMMON GROUND & GENERAL AI ROUTE
+    const generalAI = await requestAI(prompt, false);
+    const parsedData = parseJSON(generalAI.text) || { text: generalAI.text };
 
-      finalPrompt = researchPrompt(career, evidence);
-    }
+    return res.status(200).json({
+      ok: true,
+      ai: true,
+      data: parsedData
+    });
 
-    let ai;
-    let usedFallback = false;
-
-    try {
-      ai = await requestAI(finalPrompt, webSearch);
-    } catch (error) {
-      console.error("CareerMitra AI request failed", error);
-
-      if (webSearch && career && sources.length) {
-        return res.status(200).json({
-          ok: true,
-          ai: false,
-          fallbackUsed: true,
-          aiFailed: true,
-          rateLimited: Number(error?.status) === 429,
-          retryAfter: error?.retryAfter || null,
-          data: webFallbackResearch(career, sources),
-          model: null,
-          sources,
-          warning: "Source-backed recovery was used only after the AI recovery chain failed."
-        });
-      }
-
-      const status = Number(error?.status || 503);
-      return res.status(status === 429 ? 429 : 503).json({
-        ok: false,
-        aiFailed: true,
-        fallbackAllowed: true,
-        rateLimited: status === 429,
-        retryAfter: error?.retryAfter || null,
-        error: cleanText(error?.message || "AI service temporarily unavailable.")
-      });
-    }
-
-    let data = parseJSON(ai.text);
-
-    if (webSearch) {
-      if (!data || researchNeedsRepair(data)) {
-        try {
-          const repairPrompt = `${finalPrompt}
-
-RECOVERY INSTRUCTION:
-The previous response was incomplete or malformed. Rebuild the COMPLETE JSON object now. Every major section must contain useful career-specific information grounded in the supplied evidence. Do not omit sections merely because one source is weak.`;
-          const repaired = await requestAI(repairPrompt, true, true);
-          const repairedData = parseJSON(repaired.text);
-          if (repairedData && !researchNeedsRepair(repairedData)) {
-            data = repairedData;
-            ai = repaired;
-          }
-        } catch (repairError) {
-          console.error("CareerMitra AI research repair failed", repairError);
-        }
-      }
-
-      if (data) {
-        data = normalizeResearch(data, career, sources);
-      } else {
-        data = webFallbackResearch(career, sources);
-        usedFallback = true;
-      }
-    }
-
-    return res.status(200).json({
-      ok: true,
-      ai: !usedFallback,
-      fallbackUsed: usedFallback,
-      data: data || ai.text,
-      model: ai.model,
-      attempts: ai.attempts,
-      sources
-    });
-  } catch (error) {
-    console.error("CareerMitra API ERROR", error);
-    return res.status(503).json({
-      ok: false,
-      aiFailed: true,
-      fallbackAllowed: true,
-      error: cleanText(error?.message || "AI service temporarily unavailable.")
-    });
-  }
+  } catch (error) {
+    console.error("API error:", error);
+    return res.status(503).json({
+      ok: false,
+      error: cleanText(error?.message || "AI service temporarily unavailable.")
+    });
+  }
 }
