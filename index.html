@@ -629,7 +629,10 @@ function exactVaultSourcesFor(cat,v){
   return [...new Set((vals[cat]||[]).filter(Boolean).map(x=>String(x).trim()).filter(x=>x.length>=3))];
 }
 function validQuestions(r,count){
-  if(!r||!Array.isArray(r.questions)||r.questions.length!==count)return null;
+  // Gemini/OpenRouter backend may recover a partial AI payload (minimum 18).
+  // Keep every structurally valid AI question so makeQuestions() can preserve
+  // complete AI categories and use the emergency fallback only where needed.
+  if(!r||!Array.isArray(r.questions)||r.questions.length<18)return null;
   const out=[];
   for(const q0 of r.questions){
     if(!q0||typeof q0.q!=='string'||!q0.q.trim()||!Array.isArray(q0.o)||q0.o.length!==4)return null;
@@ -791,13 +794,13 @@ async function makeQuestions(s){
     stage
   });
   let all=validQuestions(result,TQ_N)||[];
-  // The backend Test Zone route performs the authoritative structural and
-  // Personal-Vault validation. Do not reject a valid server-validated test
-  // again with the older, stricter client heuristics.
+  // The backend is authoritative for Test Zone generation. It can recover a
+  // partially valid AI payload (minimum 18 questions), so never throw away
+  // those recovered questions merely because the frontend did not receive
+  // all 25. Complete AI categories remain AI; only incomplete categories use
+  // the last-resort local generator.
   const serverValidated=Boolean(result&&result._serverValidated);
-  let issues=all.length===TQ_N
-    ? (serverValidated ? [] : questionQualityIssues(all,v))
-    : ['AI response was incomplete or structurally invalid.'];
+  let issues=serverValidated ? [] : (all.length>=TQ_N ? questionQualityIssues(all,v) : []);
 
   // IMPORTANT: do not make a second long AI request here.
   // The backend already performs the Test Zone generation and validation.
