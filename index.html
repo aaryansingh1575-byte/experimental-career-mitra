@@ -222,7 +222,7 @@ async function aiJson(prompt,opts={}){
       const r=await fetch('/api/ai',{
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({prompt,webSearch})
+        body:JSON.stringify({prompt,webSearch,career:opts.career||''})
       });
       const data=await r.json().catch(()=>null);
       if(!r.ok){
@@ -1133,7 +1133,7 @@ Rules:
 - If something cannot be verified, say so instead of guessing.
 - Keep it concise but useful.`;
   try{
-    const result=await aiJson(prompt,{webSearch:true,bypassCache:true});
+    const result=await aiJson(prompt,{webSearch:true,bypassCache:true,career:name});
     if(!result)throw new Error(window.CM_AI_ERROR||'No research result returned.');
     result.sources=Array.isArray(result.sources)?result.sources:[];
     result.researched_at=new Date().toLocaleString('en-IN');
