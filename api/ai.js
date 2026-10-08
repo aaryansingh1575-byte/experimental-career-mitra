@@ -10,7 +10,8 @@ const PRIMARY_MODEL =
 
 /*
  * IMPORTANT:
- * OpenRouter allows a maximum of 3 models in the `models` array.
+ * OpenRouter allows a maximum of 3 models
+ * in the `models` array.
  */
 const FALLBACK_MODELS = [
   PRIMARY_MODEL,
@@ -90,10 +91,11 @@ function extractText(data) {
     )
   ) {
     return c.message.content
-      .map(x =>
-        typeof x === "string"
-          ? x
-          : x?.text || ""
+      .map(
+        x =>
+          typeof x === "string"
+            ? x
+            : x?.text || ""
       )
       .join("")
       .trim();
@@ -198,8 +200,7 @@ Never return code fences.
 
 GENERAL RULES:
 
-- Use the supplied student/family information exactly.
-- Never invent personal facts.
+- Use the supplied student/family information exactly; never invent personal facts.
 - For live career research, keep the EXACT career requested.
 - Do not replace a specialization with a broader career.
 - Separate verified facts, reasonable professional context, and uncertainty.
@@ -217,8 +218,7 @@ LIVE RESEARCH QUALITY:
 - Cross-check important claims across multiple sources when possible.
 - Prefer official Indian authorities, medical boards, government sources, universities, established Indian hospitals and reputable India job portals.
 - Do not treat one job listing as proof of national demand or salary.
-- Explain salary as a range/context when evidence supports it.
-- Otherwise state what is and is not verified.
+- Explain salary as a range/context when evidence supports it; otherwise state what is and is not verified.
 - For medical careers, distinguish undergraduate medical education, postgraduate specialty training, registration and optional/advanced subspecialty training.
 - For a specialist/subspecialist career, explain the actual pathway instead of giving a generic career paragraph.
 `
@@ -241,18 +241,14 @@ Do not shorten it merely to finish quickly.
 `;
 
   /*
-   * IMPORTANT:
+   * TEST ZONE:
    *
-   * Test Zone gets only ONE attempt inside this function.
-   * generateServerTest() itself controls the fresh retry.
+   * Only ONE AI request is allowed.
    *
-   * This prevents:
-   *
-   * 25 sec + 25 sec + repair
-   *
-   * from exceeding Vercel's 60 second serverless limit.
+   * A 25-question response can take a long time.
+   * Making two long requests inside one Vercel
+   * serverless invocation can exceed maxDuration.
    */
-
   const maxAttempts =
     testZone
       ? 1
@@ -267,19 +263,17 @@ Do not shorten it merely to finish quickly.
         );
 
   /*
-   * Test Zone previously had 12 seconds.
-   * That was the reason for:
+   * Previous Test Zone timeout was 12 seconds.
+   *
+   * That caused:
    *
    * "This operation was aborted"
    *
-   * 25 seconds gives the 25-question JSON generation
-   * substantially more time while keeping the serverless
-   * execution bounded.
+   * Test Zone now gets 50 seconds.
    */
-
   const timeoutMs =
     testZone
-      ? 25000
+      ? 50000
       : (
           webSearch
             ? 18000
@@ -293,6 +287,7 @@ Do not shorten it merely to finish quickly.
     attempt <= maxAttempts;
     attempt++
   ) {
+
     const controller =
       new AbortController();
 
@@ -334,7 +329,7 @@ Do not shorten it merely to finish quickly.
                   PRIMARY_MODEL,
 
                 /*
-                 * MAXIMUM THREE MODELS.
+                 * MAXIMUM 3 MODELS.
                  */
                 models:
                   FALLBACK_MODELS,
@@ -394,6 +389,7 @@ Do not shorten it merely to finish quickly.
       if (
         !response.ok
       ) {
+
         const error =
           new Error(
             cleanText(
@@ -451,7 +447,8 @@ Do not shorten it merely to finish quickly.
         );
 
       /*
-       * Do not hammer 429.
+       * Do not repeatedly hammer
+       * a rate-limited provider.
        */
       if (
         status === 429
@@ -559,6 +556,7 @@ function extractCareer(
     if (
       m?.[1]
     ) {
+
       return cleanText(
         m[1]
       ).replace(
@@ -947,6 +945,7 @@ function normalizeResearch(
   career,
   sources
 ) {
+
   const d =
     data &&
     typeof data === "object"
@@ -1091,12 +1090,6 @@ function normalizeResearch(
     }
   }
 
-  /*
-   * Never trust URLs invented by the model.
-   * Only expose URLs actually retrieved
-   * by CareerMitra's live search.
-   */
-
   if (
     Array.isArray(
       sources
@@ -1179,6 +1172,7 @@ function webFallbackResearch(
   career,
   sources
 ) {
+
   const usable =
     sources.slice(
       0,
@@ -1518,6 +1512,7 @@ function webFallbackResearch(
 function researchNeedsRepair(
   data
 ) {
+
   if (
     !data ||
     typeof data !== "object"
@@ -1732,6 +1727,7 @@ const TEST_PLAN = {
 function testVaultEvidence(
   v
 ) {
+
   const rows = [];
 
   const add =
@@ -2357,10 +2353,16 @@ async function generateServerTest(
 
   let ai;
 
-
-  /* -----------------------------------------
-     FIRST AI GENERATION
-     ----------------------------------------- */
+  /*
+   * IMPORTANT:
+   *
+   * Test Zone deliberately makes ONE
+   * long AI request.
+   *
+   * A second 25-question request inside
+   * the same Vercel function can consume
+   * the entire serverless execution time.
+   */
 
   try {
 
@@ -2372,46 +2374,14 @@ async function generateServerTest(
         true
       );
 
-  } catch (
-    firstError
-  ) {
+  } catch (error) {
 
-    /*
-     * One completely fresh AI retry.
-     *
-     * This is NOT a local question bank.
-     */
+    error.testGenerationFailed =
+      true;
 
-    try {
-
-      ai =
-        await requestAI(
-          prompt +
-            "\nGenerate a fresh complete test. Do not reuse a generic question bank.",
-          false,
-          true,
-          true
-        );
-
-    } catch (
-      secondError
-    ) {
-
-      const e =
-        secondError ||
-        firstError;
-
-      e.testGenerationFailed =
-        true;
-
-      throw e;
-    }
+    throw error;
   }
 
-
-  /* -----------------------------------------
-     PARSE + VALIDATE
-     ----------------------------------------- */
 
   let data =
     parseJSON(
@@ -2425,75 +2395,13 @@ async function generateServerTest(
     );
 
 
-  /* -----------------------------------------
-     AI VALIDATION REPAIR
-     ----------------------------------------- */
-
-  if (
-    !check.ok
-  ) {
-
-    const repairPrompt =
-      `${prompt}
-
-STRICT VALIDATION FAILED:
-
-${check.errors
-  .slice(
-    0,
-    30
-  )
-  .join(
-    "\n"
-  )}
-
-Repair and regenerate ALL 25 questions.
-
-Return JSON only.
-`;
-
-    try {
-
-      const repaired =
-        await requestAI(
-          repairPrompt,
-          false,
-          true,
-          true
-        );
-
-      const repairedData =
-        parseJSON(
-          repaired.text
-        );
-
-      const repairedCheck =
-        validateServerTest(
-          repairedData,
-          vault
-        );
-
-      if (
-        repairedCheck.ok
-      ) {
-
-        data =
-          repairedData;
-
-        check =
-          repairedCheck;
-
-        ai =
-          repaired;
-      }
-
-    } catch (_) {}
-  }
-
-
-  /* -----------------------------------------
-     FINAL TEST GENERATION FAILURE
-     ----------------------------------------- */
+  /*
+   * Do NOT make another large AI request.
+   *
+   * If the single AI response is structurally
+   * invalid, let the frontend emergency
+   * fallback handle it.
+   */
 
   if (
     !check.ok
@@ -2501,7 +2409,7 @@ Return JSON only.
 
     const e =
       new Error(
-        "AI generated an invalid Test Zone payload after recovery attempts."
+        "AI generated an invalid Test Zone payload."
       );
 
     e.testValidationFailed =
@@ -2512,6 +2420,7 @@ Return JSON only.
 
     throw e;
   }
+
 
   return {
 
@@ -2543,6 +2452,7 @@ export default async function handler(
     return res
       .status(405)
       .json({
+
         ok:
           false,
 
