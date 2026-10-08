@@ -7,10 +7,13 @@ const PRIMARY_MODEL =
   process.env.OPENROUTER_MODEL ||
   "nvidia/nemotron-3-ultra-550b-a55b:free";
 
+/*
+ * IMPORTANT:
+ * OpenRouter allows a maximum of 3 models in the `models` array.
+ */
 const FALLBACK_MODELS = [
   PRIMARY_MODEL,
   "nvidia/nemotron-3.5-lightning:free",
-  "nvidia/nemotron-3-super-120b-a12b:free",
   "openrouter/free"
 ].filter(
   (v, i, a) =>
@@ -73,16 +76,13 @@ function extractText(data) {
   const c = data?.choices?.[0];
 
   if (
-    typeof c?.message?.content ===
-    "string"
+    typeof c?.message?.content === "string"
   ) {
     return c.message.content.trim();
   }
 
   if (
-    Array.isArray(
-      c?.message?.content
-    )
+    Array.isArray(c?.message?.content)
   ) {
     return c.message.content
       .map(x =>
@@ -108,13 +108,9 @@ function extractText(data) {
    PURPOSE DETECTION
    ========================================================= */
 
-function purposeFor(
-  prompt,
-  webSearch
-) {
+function purposeFor(prompt, webSearch) {
   const p =
-    String(prompt || "")
-      .toLowerCase();
+    String(prompt || "").toLowerCase();
 
   if (webSearch) {
     return "live career research";
@@ -289,6 +285,9 @@ Do not shorten it merely to finish quickly.
                 model:
                   PRIMARY_MODEL,
 
+                /*
+                 * MAXIMUM 3 MODELS.
+                 */
                 models:
                   FALLBACK_MODELS,
 
@@ -299,6 +298,7 @@ Do not shorten it merely to finish quickly.
                     content:
                       system
                   },
+
                   {
                     role:
                       "user",
@@ -320,6 +320,7 @@ Do not shorten it merely to finish quickly.
                 provider: {
                   allow_fallbacks:
                     true,
+
                   sort:
                     "throughput"
                 }
@@ -345,8 +346,8 @@ Do not shorten it merely to finish quickly.
           new Error(
             cleanText(
               data?.error?.message ||
-                data?.error ||
-                `OpenRouter HTTP ${response.status}`
+              data?.error ||
+              `OpenRouter HTTP ${response.status}`
             )
           );
 
@@ -519,121 +520,91 @@ function sourcePriority(url) {
   }
 
   else if (
-    u.includes(
-      "natboard.edu.in"
-    )
+    u.includes("natboard.edu.in")
   ) {
     score = 118;
   }
 
   else if (
-    u.includes(
-      "nbe.edu.in"
-    )
+    u.includes("nbe.edu.in")
   ) {
     score = 118;
   }
 
   else if (
-    u.includes(
-      "mcc.nic.in"
-    )
+    u.includes("mcc.nic.in")
   ) {
     score = 116;
   }
 
   else if (
-    u.includes(
-      "aiimsexams.ac.in"
-    )
+    u.includes("aiimsexams.ac.in")
   ) {
     score = 114;
   }
 
   else if (
-    u.includes(
-      "aiims.edu"
-    )
+    u.includes("aiims.edu")
   ) {
     score = 112;
   }
 
   else if (
-    u.includes(
-      "apollohospitals.com"
-    )
+    u.includes("apollohospitals.com")
   ) {
     score = 95;
   }
 
   else if (
-    u.includes(
-      "fortishealthcare.com"
-    )
+    u.includes("fortishealthcare.com")
   ) {
     score = 93;
   }
 
   else if (
-    u.includes(
-      "maxhealthcare.in"
-    )
+    u.includes("maxhealthcare.in")
   ) {
     score = 93;
   }
 
   else if (
-    u.includes(
-      "medanta.org"
-    )
+    u.includes("medanta.org")
   ) {
     score = 93;
   }
 
   else if (
-    u.includes(
-      "in.indeed.com"
-    )
+    u.includes("in.indeed.com")
   ) {
     score = 88;
   }
 
   else if (
-    u.includes(
-      "naukri.com"
-    )
+    u.includes("naukri.com")
   ) {
     score = 82;
   }
 
   else if (
-    u.includes(
-      "linkedin.com"
-    )
+    u.includes("linkedin.com")
   ) {
     score = 70;
   }
 
   else if (
-    u.includes(
-      "who.int"
-    )
+    u.includes("who.int")
   ) {
     score = 65;
   }
 
   else if (
-    u.includes(
-      ".gov.in"
-    )
+    u.includes(".gov.in")
   ) {
     score = 100;
   }
 
   else if (
-    u.includes(
-      ".ac.in"
-    )
+    u.includes(".ac.in")
   ) {
     score = 90;
   }
@@ -1359,7 +1330,7 @@ function researchNeedsRepair(
 
 
 /* =========================================================
-   TEST ZONE
+   TEST ZONE AI ENGINE
    ========================================================= */
 
 function testArr(v) {
@@ -1393,7 +1364,7 @@ function testArr(v) {
 
 
 /* =========================================================
-   NORMALIZE PERSONAL VAULT
+   NORMALIZE TEST VAULT
    ========================================================= */
 
 function normalizeTestVault(
@@ -1594,7 +1565,7 @@ function testVaultEvidence(v) {
 
 
 /* =========================================================
-   TEST PROMPT
+   SERVER TEST PROMPT
    ========================================================= */
 
 function buildServerTestPrompt(
@@ -1941,8 +1912,7 @@ function validateServerTest(
       const correct =
         q.o.filter(
           x =>
-            x?.correct ===
-            true
+            x?.correct === true
         ).length;
 
       if (
@@ -2447,16 +2417,6 @@ export default async function handler(
         );
 
 
-        /*
-         * IMPORTANT:
-         *
-         * Backend does NOT generate
-         * deterministic fallback questions.
-         *
-         * Frontend receives permission
-         * to use emergency fallback only.
-         */
-
         return res
           .status(503)
           .json({
@@ -2503,7 +2463,7 @@ export default async function handler(
 
 
     /* =====================================================
-       NORMAL CAREER AI
+       NORMAL CAREER AI ROUTE
        ===================================================== */
 
     let finalPrompt =
