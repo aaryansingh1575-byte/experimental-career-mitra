@@ -629,10 +629,7 @@ function exactVaultSourcesFor(cat,v){
   return [...new Set((vals[cat]||[]).filter(Boolean).map(x=>String(x).trim()).filter(x=>x.length>=3))];
 }
 function validQuestions(r,count){
-  // Gemini/OpenRouter backend may recover a partial AI payload (minimum 18).
-  // Keep every structurally valid AI question so makeQuestions() can preserve
-  // complete AI categories and use the emergency fallback only where needed.
-  if(!r||!Array.isArray(r.questions)||r.questions.length<18)return null;
+  if(!r||!Array.isArray(r.questions)||r.questions.length!==count)return null;
   const out=[];
   for(const q0 of r.questions){
     if(!q0||typeof q0.q!=='string'||!q0.q.trim()||!Array.isArray(q0.o)||q0.o.length!==4)return null;
@@ -794,13 +791,13 @@ async function makeQuestions(s){
     stage
   });
   let all=validQuestions(result,TQ_N)||[];
-  // The backend is authoritative for Test Zone generation. It can recover a
-  // partially valid AI payload (minimum 18 questions), so never throw away
-  // those recovered questions merely because the frontend did not receive
-  // all 25. Complete AI categories remain AI; only incomplete categories use
-  // the last-resort local generator.
+  // The backend Test Zone route performs the authoritative structural and
+  // Personal-Vault validation. Do not reject a valid server-validated test
+  // again with the older, stricter client heuristics.
   const serverValidated=Boolean(result&&result._serverValidated);
-  let issues=serverValidated ? [] : (all.length>=TQ_N ? questionQualityIssues(all,v) : []);
+  let issues=all.length===TQ_N
+    ? (serverValidated ? [] : questionQualityIssues(all,v))
+    : ['AI response was incomplete or structurally invalid.'];
 
   // IMPORTANT: do not make a second long AI request here.
   // The backend already performs the Test Zone generation and validation.
@@ -1654,7 +1651,6 @@ function scoreView(){
   const{an,html}=scoreBlock(s);
   const stg=STAGES[s.stage];
   return bar+`<div class="card"><h2>${esc(s.profile.fullName)} — Scorecard &amp; Analysis</h2><p class="muted">${stg?stg.t+' · ':''}Combined view of the student’s Test Zone result and the family’s perspective.</p></div>`+staleNote(s)+html+anchorCareerBlock(s,an)+
-   `<div class="card"><h2>Suitable careers</h2><p class="muted small">Open each role for alternatives, pros, cons and market value.</p></div>`+rolesBlock(an,false)+
    `<div class="card"><h2>Family perspective</h2>${fOk.map(([id,f])=>`<div class="qa"><div class="row sp"><b>${esc(f.profile.fullName)} <span class="muted small">(${esc(f.profile.relation)})</span></b><span class="fit ${f.status==='supportive'?'s':'p'}">${f.status==='supportive'?'Supportive':'Unsatisfied'} · ${f.rating}/10</span></div>
      ${f.status==='supportive'?'<p class="muted">The family has recorded support. Generic support is not treated as proof for any specific career.</p>':f.qa.filter(x=>x.accepted).map(x=>`<div class="qa"><b>${esc(x.q)}</b><p style="margin:4px 0">“${esc(x.a)}”</p><div class="note info small">${x.ai&&x.ai.evidence?esc(x.ai.evidence):esc(concernNote(x.a,an))}${x.ai&&x.ai.dimensions&&x.ai.dimensions.length?`<br><span class="muted">Topics detected: ${esc(x.ai.dimensions.join(' · '))}</span>`:''}</div></div>`).join('')}</div>`).join('')}</div>`+familyIntersectionBlock(s,an,fOk);
 }
