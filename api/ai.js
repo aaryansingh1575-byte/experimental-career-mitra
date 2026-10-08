@@ -1,9 +1,8 @@
 export const maxDuration = 60;
 
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_URL =
+  "https://openrouter.ai/api/v1/chat/completions";
 
-// Keep the router configurable.
-// You can override the primary model from Vercel Environment Variables.
 const PRIMARY_MODEL =
   process.env.OPENROUTER_MODEL ||
   "nvidia/nemotron-3-ultra-550b-a55b:free";
@@ -42,23 +41,25 @@ function parseJSON(text) {
     return JSON.parse(s);
   } catch (_) {}
 
-  // Try extracting an object from surrounding model text.
-  const a = s.indexOf("{");
-  const b = s.lastIndexOf("}");
+  const objStart = s.indexOf("{");
+  const objEnd = s.lastIndexOf("}");
 
-  if (a >= 0 && b > a) {
+  if (objStart >= 0 && objEnd > objStart) {
     try {
-      return JSON.parse(s.slice(a, b + 1));
+      return JSON.parse(
+        s.slice(objStart, objEnd + 1)
+      );
     } catch (_) {}
   }
 
-  // Try extracting an array.
-  const x = s.indexOf("[");
-  const y = s.lastIndexOf("]");
+  const arrStart = s.indexOf("[");
+  const arrEnd = s.lastIndexOf("]");
 
-  if (x >= 0 && y > x) {
+  if (arrStart >= 0 && arrEnd > arrStart) {
     try {
-      return JSON.parse(s.slice(x, y + 1));
+      return JSON.parse(
+        s.slice(arrStart, arrEnd + 1)
+      );
     } catch (_) {}
   }
 
@@ -66,14 +67,16 @@ function parseJSON(text) {
 }
 
 function extractText(data) {
-  const c = data?.choices?.[0];
+  const choice = data?.choices?.[0];
 
-  if (typeof c?.message?.content === "string") {
-    return c.message.content.trim();
+  if (
+    typeof choice?.message?.content === "string"
+  ) {
+    return choice.message.content.trim();
   }
 
-  if (Array.isArray(c?.message?.content)) {
-    return c.message.content
+  if (Array.isArray(choice?.message?.content)) {
+    return choice.message.content
       .map(x =>
         typeof x === "string"
           ? x
@@ -83,8 +86,8 @@ function extractText(data) {
       .trim();
   }
 
-  if (typeof c?.text === "string") {
-    return c.text.trim();
+  if (typeof choice?.text === "string") {
+    return choice.text.trim();
   }
 
   return "";
@@ -103,27 +106,35 @@ function purposeFor(prompt, webSearch) {
   }
 
   if (
-    /common ground|both sides|family concerns|student test analysis|decision-support analyst/.test(p)
-  ) {
-    return "common-ground analysis";
-  }
-
-  if (
-    /parent|family|sincere|specific|relevant response|concern/.test(p)
-  ) {
-    return "family question/answer analysis";
-  }
-
-  if (
-    /complete test|question plan|holland|personal vault|multiple-choice questions/.test(p)
+    /complete test|question plan|holland|personal vault|multiple-choice questions/.test(
+      p
+    )
   ) {
     return "student test generation";
   }
 
   if (
-    /personality-and-interest test|holland-code tallies|career counsellor|test responses|rankedcareers|student's actual test zone responses/.test(p)
+    /personality-and-interest test|holland-code tallies|career counsellor|test responses|rankedcareers|student's actual test zone responses/.test(
+      p
+    )
   ) {
-    return "student test answer analysis";
+    return "student test analysis";
+  }
+
+  if (
+    /common ground|both sides|family concerns|decision-support analyst/.test(
+      p
+    )
+  ) {
+    return "student-family common-ground analysis";
+  }
+
+  if (
+    /parent|family|sincere|specific|relevant response|concern/.test(
+      p
+    )
+  ) {
+    return "family analysis";
   }
 
   return "career counselling";
@@ -131,11 +142,16 @@ function purposeFor(prompt, webSearch) {
 
 
 /* =========================================================
-   GLOBAL AI SYSTEM PROMPT
+   CORE AI REQUEST
 ========================================================= */
 
-async function requestAI(prompt, webSearch = false, repair = false) {
-  const key = process.env.OPENROUTER_API_KEY;
+async function requestAI(
+  prompt,
+  webSearch = false,
+  repair = false
+) {
+  const key =
+    process.env.OPENROUTER_API_KEY;
 
   if (!key) {
     throw new Error(
@@ -143,267 +159,224 @@ async function requestAI(prompt, webSearch = false, repair = false) {
     );
   }
 
-  const purpose = purposeFor(prompt, webSearch);
+  const purpose =
+    purposeFor(prompt, webSearch);
 
-  const system = `You are CareerMitra's ${purpose} engine.
+  const system = `
+You are CareerMitra's ${purpose} engine.
 
-Your role is to help a real student make a clearer career decision.
+You are assisting a real student.
 
-You MUST remain neutral, humble, respectful and evidence-led.
-
-Return ONLY valid JSON.
-Never return markdown.
-Never return code fences.
-Never return explanation outside JSON.
+Your responsibility is to understand the information supplied by
+the student or family and respond carefully, neutrally and respectfully.
 
 ==================================================
-CORE CAREERMITRA PRINCIPLES
+CORE PRINCIPLE
 ==================================================
 
-1. USER DATA COMES FIRST
+DO NOT DECIDE WHAT THE USER SHOULD WANT.
 
-Use only the information supplied by the student/family.
+DO NOT PUSH A CAREER.
 
-Do not invent:
-- interests
-- personality traits
-- family beliefs
-- financial conditions
-- skills
-- ambitions
-- academic ability
-- career goals
-- preferences
+DO NOT ASSUME A CAREER IS BETTER.
 
-If information is missing, say that it is missing.
-
-2. ZERO INTENTIONAL CAREER BIAS
-
-Do NOT favour or discourage any career because it is:
-
+DO NOT REWARD A CAREER BECAUSE IT IS:
 - popular
 - prestigious
 - high paying
 - socially respected
+- traditionally preferred
 - government
 - private
 - technical
 - medical
-- engineering
-- AI-related
-- traditional
-- modern
+- fashionable
 - considered "safe"
-- considered "future-proof"
-- considered "better"
-- considered "successful"
 
-A career mentioned by the student is evidence of interest,
-NOT proof that it is the correct career.
+Only use evidence actually supplied by the user or retrieved
+from the explicitly requested live research.
 
-3. DO NOT PUSH THE NON-NEGOTIABLE CAREER
+==================================================
+NEUTRALITY
+==================================================
 
-If the student has supplied a non-negotiable career:
+- Every career must start with a neutral prior.
+- A named career is only a preference/evidence signal.
+- A non-negotiable career is NOT automatically the best career.
+- A parent's preference is NOT automatically correct.
+- A student's preference is NOT automatically correct.
+- Neither side should dominate merely because it is the student
+  or the parent.
+- Do not infer personality from gender, income, location,
+  school, family background, marks or social stereotypes.
+- Do not assume engineering is better than medicine.
+- Do not assume medicine is better than engineering.
+- Do not assume government jobs are safer.
+- Do not assume private jobs are better.
+- Do not assume high salary means high suitability.
+- Do not assume passion means suitability.
+- Do not assume family concern means opposition.
+- Do not assume family support means support for a particular career.
 
-Treat it as an important preference.
+==================================================
+EVIDENCE RULE
+==================================================
 
-Do NOT automatically recommend it.
-
-It must still be compared against:
-- Test Zone evidence
-- Personal Vault evidence
-- actual answers
-- skills
-- interests
-- realistic requirements
-- family perspective when relevant
-
-4. DO NOT PUNISH THE NON-NEGOTIABLE CAREER
-
-The opposite is also important.
-
-Do not deliberately lower its score simply because it is the student's dream.
-
-Evaluate it fairly.
-
-5. NO STEREOTYPES
-
-Do not assume that:
-
-- a student who likes mathematics must become an engineer
-- a student who likes biology must become a doctor
-- a student who likes coding must become a software engineer
-- a student who likes flying must become a pilot
-- a student who likes helping people must become a doctor
-- a student who likes business must become an entrepreneur
-- a high-income career is preferable
-- a government career is safer
-- a private career is better
-- a particular gender is suited to a particular career
-- family income determines what career the student should choose
-
-Only the supplied evidence can support such conclusions.
-
-6. MIXED EVIDENCE MUST STAY MIXED
-
-If the evidence points in different directions:
-
-Say so.
-
-Do not force a clean conclusion.
-
-Do not manufacture certainty.
-
-7. FEWER RECOMMENDATIONS ARE BETTER THAN WRONG RECOMMENDATIONS
-
-If only one career is genuinely supported, return one.
-
-If two are supported, return two.
-
-Do not fill a Top 3 list with weak candidates.
-
-8. SIMPLE LANGUAGE
+Every meaningful conclusion must be connected to evidence.
 
 Use:
-- easy English
-- short sentences
+
+1. Direct evidence
+2. Repeated evidence
+3. Consistent evidence
+4. Reasonable uncertainty
+
+Do NOT convert weak evidence into certainty.
+
+If evidence conflicts:
+
+say that it conflicts.
+
+If evidence is insufficient:
+
+say that it is insufficient.
+
+If two careers are similarly supported:
+
+do not artificially separate them.
+
+If only two careers genuinely fit:
+
+return two.
+
+Never create a third career simply to complete a Top 3 list.
+
+==================================================
+LANGUAGE
+==================================================
+
+Use:
+
+- very simple English
+- respectful language
 - soft tone
-- polite language
 - humble wording
+- short explanations
+- clear reasoning
 
 Avoid:
-- "obviously"
-- "definitely"
-- "clearly"
-- "the best career"
+
+- harsh language
+- absolute statements
 - "you must"
-- "you should definitely"
-- "this is perfect for you"
+- "obviously"
+- "clearly this is the best"
+- "you are definitely suited"
+- "this is the perfect career"
 
 Prefer:
-- "your answers suggest"
-- "this may indicate"
-- "there is some evidence"
-- "this seems worth exploring"
-- "the evidence is mixed"
-- "more information would help"
 
-9. EVIDENCE VS INTERPRETATION
-
-Always distinguish between:
-
-DIRECT EVIDENCE:
-What the student actually entered.
-
-INTERPRETATION:
-What the AI reasonably infers from that evidence.
-
-UNCERTAINTY:
-What cannot be determined yet.
-
-10. ONE ANSWER MUST NEVER CONTROL THE WHOLE RESULT
-
-Do not recommend a career from one question.
-
-Look for patterns across multiple answers.
+- "The available evidence suggests..."
+- "This may indicate..."
+- "There is some support for..."
+- "The evidence is mixed..."
+- "This cannot be concluded confidently yet..."
 
 ==================================================
-TEST ZONE RULES
+STUDENT TEST
 ==================================================
 
-When generating the student test:
+When generating questions:
 
-The test must be personalised from the complete Personal Vault.
+- Use the actual Personal Vault.
+- Questions must be meaningfully connected to Vault data.
+- Do not repeatedly ask about the same interest.
+- Do not fabricate an interest.
+- Do not fabricate a skill.
+- Do not fabricate a career preference.
+- Do not make questions designed to push a particular career.
+- Do not make the "correct" personality answer obvious.
+- Do not use emotionally loaded options.
+- Do not make one option sound smarter.
+- Do not make one option sound more ambitious.
+- Do not make one option sound safer.
+- Do not make one option socially superior.
 
-The test should understand:
+Options must be:
 
-- interests
-- hobbies
-- likings
-- strong subjects
-- preferred roles
-- non-negotiable career
-- alternative careers
-- chosen field
-- why the student chose the field
-- why the student rejected other fields
-- skills
-- life stage
+- plausible
+- balanced
+- grammatically similar
+- comparable in length
+- neutral in emotional tone
+- mutually understandable
+- relevant to the question
 
-Do NOT simply repeat the vault back as questions.
+Avoid absurd distractors.
 
-The test should explore the student.
+Avoid "obviously wrong" options.
 
-The test should contain different types of questions.
+Avoid options such as:
+"Do nothing"
+"Become successful"
+"Choose the highest salary"
 
-PERSONALITY QUESTIONS:
-No correct answer.
+unless the question genuinely requires such an option.
 
-SITUATIONAL QUESTIONS:
-No morally superior answer.
+For career-related questions, do not directly ask:
+"Would you choose X?"
 
-INTEREST QUESTIONS:
-Should explore the student's actual interests.
+Instead test underlying preferences such as:
+- type of problem
+- work environment
+- depth vs variety
+- people interaction
+- uncertainty tolerance
+- learning style
+- practical vs theoretical work
+- responsibility preference
+- work rhythm
+- collaboration
+- creativity
+- analytical thinking
 
-SUBJECT/SKILL QUESTIONS:
-Should relate to the student's actual subjects and skills.
-
-CAREER QUESTIONS:
-Should compare possibilities neutrally.
-
-KNOWLEDGE QUESTIONS:
-Must have exactly ONE objectively correct answer.
-
-==================================================
-TEST OPTION QUALITY
-==================================================
-
-For every multiple-choice question:
-
-- exactly 4 options
-- options must be logically possible
-- options must be relevant
-- options must be similar in style
-- options should be reasonably similar in length
-- do not make one option dramatically more detailed
-- do not make one option obviously positive
-- do not make one option obviously negative
-- do not use jokes as distractors
-- do not use nonsense options
-- do not use "all of the above" unless genuinely necessary
-- do not use "none of the above" unless genuinely necessary
-- do not make the preferred career the obvious correct answer
-- do not make the student's non-negotiable career appear repeatedly
-- do not use the same answer position repeatedly
-
-For personality/situation questions:
-
-There should NOT be an obviously "good" personality answer.
-
-For example, do NOT create:
-
-A. I carefully analyse everything.
-B. I ignore all problems.
-C. I never care about anything.
-D. I give up immediately.
-
-That is biased.
-
-Instead create genuinely different reasonable behaviours.
+The test should discover patterns, not confirm a predetermined answer.
 
 ==================================================
-CAREER NEUTRALITY
+TEST ANALYSIS
 ==================================================
 
-Never assume:
+When analysing the student's completed test:
 
-Career A > Career B.
+Use BOTH:
 
-Compare careers based on the supplied student evidence.
+A. Test responses
+B. Personal Vault
 
-A career may be suitable because of one combination of evidence.
+Do not rely only on the Holland score.
 
-Another student with different evidence may receive a different result.
+Do not let one answer decide the result.
+
+Look for:
+
+- repeated patterns
+- contradictions
+- stable preferences
+- uncertain areas
+- work-style signals
+- interest signals
+- subject signals
+- skill signals
+- role preferences
+- career preferences
+
+Clearly distinguish:
+
+Evidence
+from
+Interpretation.
+
+Do not manufacture certainty.
 
 ==================================================
 FAMILY ANALYSIS
@@ -411,242 +384,261 @@ FAMILY ANALYSIS
 
 Family answers must be interpreted carefully.
 
-Generic statements such as:
+Examples:
 
-"I support whatever he wants."
+"I support whatever he wants"
 
-"I don't care."
+means:
 
-"Money is no problem."
+general support.
 
-"I trust my child."
+It does NOT mean:
 
-"No problem."
+support for every specific career.
 
-must NOT be treated as evidence supporting a specific career.
+"No problem with salary"
 
-A family statement mentioning a specific career may be evidence of a preference.
+does NOT mean:
 
-A family concern may be evidence of a constraint.
+salary is an important positive preference.
 
-Do not convert general support into career support.
+"I want him to become a pilot"
 
-Do not invent family preferences.
+IS:
+
+an explicit family preference for pilot.
+
+"Surgeon is a lifesaving job"
+
+is:
+
+a positive statement about surgeon,
+but NOT automatically proof that surgeon
+matches every other family concern.
+
+"Everyone has to go away"
+
+does NOT automatically mean:
+location is irrelevant.
+
+Always preserve the actual meaning of the parent's answer.
 
 ==================================================
 COMMON GROUND
 ==================================================
 
-For common-ground analysis:
+For student-family common ground:
 
-A career must have:
+A career should be considered only when:
 
-1. student-side evidence
-AND
-2. genuine family-side evidence
+1. Student evidence supports it.
+2. Family evidence supports or meaningfully accommodates it.
+3. No major unresolved conflict makes the match misleading.
 
-Do not select a career only because:
+Generic family support is NOT career-specific evidence.
+
+A career must not enter Top 3 only because:
 - it pays well
-- it is popular
-- it is already in the database
-- it sounds respectable
-- it is technically related
-- it is medically related
-- it appears in the student's non-negotiable field
+- it is prestigious
+- it is common
+- AI thinks it is popular
+- the student typed it once
+- the parent mentioned a related field once
 
-If family evidence conflicts with the career:
-
-Record the conflict.
-
-Do not hide it.
+Show conflicts honestly.
 
 ==================================================
-LIVE RESEARCH
+LIVE CAREER RESEARCH
 ==================================================
 
-For live career research:
+When live research is requested:
 
-Keep the EXACT career requested.
-
-Do not silently broaden or replace it.
-
-Prefer India-specific sources.
-
-Never invent:
-- URL
-- salary
-- qualification
-- registration requirement
-- statistic
-- demand claim
-
-==================================================
-${webSearch ? `
-LIVE RESEARCH QUALITY:
-
-Use the web evidence supplied in the user message.
-
-Cross-check important claims where possible.
-
-Prefer:
-
-- official Indian authorities
-- government sources
-- medical boards
-- universities
-- established Indian hospitals
-- reputable Indian job portals
-- professional organisations
-
-Do not treat one job listing as proof of national demand.
-
-Do not treat search-result volume as a national demand statistic.
+- Research the EXACT career.
+- Preserve specialization.
+- Prefer India.
+- Do not replace a specialized role with a generic career.
+- Use retrieved evidence.
+- Never invent URLs.
+- Never invent salary numbers.
+- Never invent regulations.
+- Never invent demand statistics.
 
 For medical careers:
-- distinguish MBBS
-- registration
-- postgraduate specialty
-- fellowship/subspecialty
-- advanced training
 
-Do not claim that a fellowship is legally mandatory unless the supplied evidence supports it.
+separate:
 
-For salary:
-Use ranges/context only when supported.
+MBBS
+registration
+postgraduate specialty
+advanced specialty/fellowship
 
-Mention that salary can vary by:
-- experience
-- location
-- employer
-- public/private setting
-- practice type
-
-` : ""}
+where applicable.
 
 ==================================================
-RECOVERY MODE
+OUTPUT
 ==================================================
 
-${repair ? `
-This is a recovery pass.
+Return ONLY valid JSON.
 
-The previous AI response was incomplete, malformed or insufficient.
+No markdown.
 
-Rebuild the requested output carefully from the supplied evidence.
+No code fences.
 
-Do not reduce quality merely to complete the response.
+No explanation outside JSON.
 
-Return the complete JSON structure requested by the user.
-` : ""}
+${
+  repair
+    ? `
+THIS IS A RECOVERY PASS.
+
+A previous response was malformed or incomplete.
+
+Rebuild the requested response completely.
+
+Do not reduce quality merely to produce valid JSON.
+`
+    : ""
+}
 `;
 
   /*
-    OpenRouter can perform provider/model fallback.
+   * IMPORTANT RATE-LIMIT STRATEGY
+   *
+   * We do NOT aggressively retry 429.
+   *
+   * A 429 often means account/model/provider quota.
+   * Repeating the same request immediately only makes
+   * the situation worse.
+   */
 
-    We intentionally do not repeatedly hammer 429 responses.
-    A 429 may represent account-level quota exhaustion.
-  */
+  const maxAttempts = 2;
 
-  const maxAttempts = repair ? 2 : 2;
-
-  const timeoutMs = webSearch
-    ? 18000
-    : 12000;
+  const timeoutMs =
+    webSearch
+      ? 18000
+      : 12000;
 
   let lastError = null;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  for (
+    let attempt = 1;
+    attempt <= maxAttempts;
+    attempt++
+  ) {
+    const controller =
+      new AbortController();
 
-    const controller = new AbortController();
-
-    const timer = setTimeout(() => {
-      controller.abort();
-    }, timeoutMs);
-
-    try {
-
-      const response = await fetch(
-        OPENROUTER_URL,
-        {
-          method: "POST",
-
-          headers: {
-            Authorization: `Bearer ${key}`,
-            "Content-Type": "application/json",
-            "HTTP-Referer":
-              process.env.SITE_URL ||
-              "https://careermitra.vercel.app",
-            "X-Title": "CareerMitra"
-          },
-
-          body: JSON.stringify({
-
-            model: PRIMARY_MODEL,
-
-            models: FALLBACK_MODELS,
-
-            messages: [
-              {
-                role: "system",
-                content: system
-              },
-              {
-                role: "user",
-                content: prompt
-              }
-            ],
-
-            temperature: webSearch
-              ? 0.05
-              : 0.15,
-
-            max_tokens: webSearch
-              ? 6500
-              : 6000,
-
-            provider: {
-              allow_fallbacks: true,
-              sort: "throughput"
-            }
-
-          }),
-
-          signal: controller.signal
-        }
+    const timer =
+      setTimeout(
+        () => controller.abort(),
+        timeoutMs
       );
 
-      const raw = await response.text();
+    try {
+      const model =
+        FALLBACK_MODELS[
+          (attempt - 1) %
+            FALLBACK_MODELS.length
+        ];
+
+      const response =
+        await fetch(
+          OPENROUTER_URL,
+          {
+            method: "POST",
+
+            headers: {
+              Authorization:
+                `Bearer ${key}`,
+
+              "Content-Type":
+                "application/json",
+
+              "HTTP-Referer":
+                process.env.SITE_URL ||
+                "https://careermitra.vercel.app",
+
+              "X-Title":
+                "CareerMitra"
+            },
+
+            body:
+              JSON.stringify({
+                model,
+
+                models:
+                  FALLBACK_MODELS,
+
+                messages: [
+                  {
+                    role: "system",
+                    content: system
+                  },
+                  {
+                    role: "user",
+                    content: prompt
+                  }
+                ],
+
+                temperature:
+                  webSearch
+                    ? 0.05
+                    : 0.15,
+
+                max_tokens:
+                  webSearch
+                    ? 6500
+                    : 6000,
+
+                provider: {
+                  allow_fallbacks: true,
+                  sort: "throughput"
+                }
+              }),
+
+            signal:
+              controller.signal
+          }
+        );
+
+      const raw =
+        await response.text();
 
       let data = null;
 
       try {
-        data = JSON.parse(raw);
+        data =
+          JSON.parse(raw);
       } catch (_) {}
 
       if (!response.ok) {
+        const error =
+          new Error(
+            cleanText(
+              data?.error?.message ||
+              data?.error ||
+              `OpenRouter HTTP ${response.status}`
+            )
+          );
 
-        const error = new Error(
-          cleanText(
-            data?.error?.message ||
-            data?.error ||
-            `OpenRouter HTTP ${response.status}`
-          )
-        );
-
-        error.status = response.status;
+        error.status =
+          response.status;
 
         error.retryAfter =
-          response.headers.get("retry-after") ||
-          null;
+          response.headers.get(
+            "retry-after"
+          );
 
         error.providerCode =
-          data?.error?.metadata?.provider_code ||
+          data?.error?.metadata
+            ?.provider_code ||
           null;
 
         throw error;
       }
 
-      const text = extractText(data);
+      const text =
+        extractText(data);
 
       if (!text) {
         throw new Error(
@@ -656,7 +648,10 @@ Return the complete JSON structure requested by the user.
 
       return {
         text,
-        model: data?.model || PRIMARY_MODEL,
+        model:
+          data?.model ||
+          model ||
+          PRIMARY_MODEL,
         attempts: attempt
       };
 
@@ -665,18 +660,52 @@ Return the complete JSON structure requested by the user.
       lastError = error;
 
       const status =
-        Number(error?.status || 0);
+        Number(
+          error?.status || 0
+        );
 
       /*
-        Do not repeatedly retry 429.
-        If account quota is exhausted, immediate retries
-        do not magically restore quota.
-      */
-
+       * NEVER HAMMER 429
+       */
       if (status === 429) {
+
+        if (
+          attempt < maxAttempts
+        ) {
+
+          const retryAfter =
+            Number(
+              error?.retryAfter ||
+              0
+            );
+
+          const wait =
+            Math.min(
+              5000,
+              Math.max(
+                1500,
+                retryAfter * 1000
+              )
+            );
+
+          await new Promise(
+            resolve =>
+              setTimeout(
+                resolve,
+                wait
+              )
+          );
+
+          continue;
+        }
+
         break;
       }
 
+      /*
+       * Retry infrastructure
+       * failures only.
+       */
       const retryable =
         !status ||
         [
@@ -696,13 +725,16 @@ Return the complete JSON structure requested by the user.
 
         const wait =
           Math.min(
-            1200,
-            350 * attempt
+            1500,
+            400 * attempt
           );
 
         await new Promise(
           resolve =>
-            setTimeout(resolve, wait)
+            setTimeout(
+              resolve,
+              wait
+            )
         );
 
         continue;
@@ -713,7 +745,6 @@ Return the complete JSON structure requested by the user.
     } finally {
 
       clearTimeout(timer);
-
     }
   }
 
@@ -734,12 +765,18 @@ function extractCareer(
   prompt,
   suppliedCareer = ""
 ) {
-
-  if (cleanText(suppliedCareer)) {
-    return cleanText(suppliedCareer);
+  if (
+    cleanText(
+      suppliedCareer
+    )
+  ) {
+    return cleanText(
+      suppliedCareer
+    );
   }
 
-  const p = cleanText(prompt);
+  const p =
+    cleanText(prompt);
 
   const patterns = [
 
@@ -752,17 +789,19 @@ function extractCareer(
     /career\s+of\s+["“']?(.+?)["”']?(?:\s+in India|\n|$)/i,
 
     /career\s*[:\-]\s*["“']?(.+?)["”']?(?:\n|$)/i
-
   ];
 
-  for (const re of patterns) {
+  for (
+    const re of patterns
+  ) {
 
-    const m = p.match(re);
+    const match =
+      p.match(re);
 
-    if (m?.[1]) {
+    if (match?.[1]) {
 
       return cleanText(
-        m[1]
+        match[1]
       ).replace(
         /[.,;]+$/,
         ""
@@ -781,57 +820,106 @@ function extractCareer(
 function sourcePriority(url) {
 
   const u =
-    String(url || "").toLowerCase();
+    String(url || "")
+      .toLowerCase();
 
   let score = 20;
 
-  if (u.includes("nmc.org.in"))
+  if (
+    u.includes("nmc.org.in")
+  ) {
     score = 120;
+  }
 
-  else if (u.includes("natboard.edu.in"))
+  else if (
+    u.includes("natboard.edu.in")
+  ) {
     score = 118;
+  }
 
-  else if (u.includes("nbe.edu.in"))
+  else if (
+    u.includes("nbe.edu.in")
+  ) {
     score = 118;
+  }
 
-  else if (u.includes("mcc.nic.in"))
+  else if (
+    u.includes("mcc.nic.in")
+  ) {
     score = 116;
+  }
 
-  else if (u.includes("aiimsexams.ac.in"))
+  else if (
+    u.includes("aiimsexams.ac.in")
+  ) {
     score = 114;
+  }
 
-  else if (u.includes("aiims.edu"))
+  else if (
+    u.includes("aiims.edu")
+  ) {
     score = 112;
+  }
 
-  else if (u.includes("apollohospitals.com"))
-    score = 95;
+  else if (
+    u.includes(".gov.in")
+  ) {
+    score = 110;
+  }
 
-  else if (u.includes("fortishealthcare.com"))
-    score = 93;
-
-  else if (u.includes("maxhealthcare.in"))
-    score = 93;
-
-  else if (u.includes("medanta.org"))
-    score = 93;
-
-  else if (u.includes("in.indeed.com"))
-    score = 88;
-
-  else if (u.includes("naukri.com"))
-    score = 82;
-
-  else if (u.includes("linkedin.com"))
-    score = 70;
-
-  else if (u.includes("who.int"))
-    score = 65;
-
-  else if (u.includes(".gov.in"))
+  else if (
+    u.includes(".ac.in")
+  ) {
     score = 100;
+  }
 
-  else if (u.includes(".ac.in"))
-    score = 90;
+  else if (
+    u.includes("apollohospitals.com")
+  ) {
+    score = 95;
+  }
+
+  else if (
+    u.includes("fortishealthcare.com")
+  ) {
+    score = 93;
+  }
+
+  else if (
+    u.includes("maxhealthcare.in")
+  ) {
+    score = 93;
+  }
+
+  else if (
+    u.includes("medanta.org")
+  ) {
+    score = 93;
+  }
+
+  else if (
+    u.includes("in.indeed.com")
+  ) {
+    score = 88;
+  }
+
+  else if (
+    u.includes("naukri.com")
+  ) {
+    score = 82;
+  }
+
+  else if (
+    u.includes("linkedin.com")
+  ) {
+    score = 70;
+  }
+
+  else if (
+    u.includes("who.int")
+  ) {
+    score = 65;
+  }
 
   return score;
 }
@@ -841,7 +929,9 @@ function sourcePriority(url) {
    WEB SEARCH
 ========================================================= */
 
-async function searchWeb(query) {
+async function searchWeb(
+  query
+) {
 
   try {
 
@@ -849,22 +939,23 @@ async function searchWeb(query) {
       "https://www.bing.com/search?format=rss&q=" +
       encodeURIComponent(query);
 
-    const r = await fetch(
-      url,
-      {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 CareerMitra/1.0"
+    const response =
+      await fetch(
+        url,
+        {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 CareerMitra/1.0"
+          }
         }
-      }
-    );
+      );
 
-    if (!r.ok) {
+    if (!response.ok) {
       return [];
     }
 
     const xml =
-      await r.text();
+      await response.text();
 
     const items =
       xml.match(
@@ -890,29 +981,30 @@ async function searchWeb(query) {
             /<description>([\s\S]*?)<\/description>/i
           )?.[1] || "";
 
-        const clean = v =>
-          String(v || "")
-            .replace(
-              /<!\[CDATA\[|\]\]>/g,
-              ""
-            )
-            .replace(
-              /&amp;/g,
-              "&"
-            )
-            .replace(
-              /&quot;/g,
-              '"'
-            )
-            .replace(
-              /&#39;/g,
-              "'"
-            )
-            .replace(
-              /<[^>]+>/g,
-              " "
-            )
-            .trim();
+        const clean =
+          v =>
+            String(v || "")
+              .replace(
+                /<!\[CDATA\[|\]\]>/g,
+                ""
+              )
+              .replace(
+                /&amp;/g,
+                "&"
+              )
+              .replace(
+                /&quot;/g,
+                '"'
+              )
+              .replace(
+                /&#39;/g,
+                "'"
+              )
+              .replace(
+                /<[^>]+>/g,
+                " "
+              )
+              .trim();
 
         return {
           title: clean(title),
@@ -924,13 +1016,14 @@ async function searchWeb(query) {
       .filter(
         x =>
           x.title &&
-          /^https?:\/\//i.test(x.url)
+          /^https?:\/\//i.test(
+            x.url
+          )
       );
 
   } catch (_) {
 
     return [];
-
   }
 }
 
@@ -947,164 +1040,77 @@ function researchPrompt(
   return `
 You are CareerMitra's senior India-focused career research analyst.
 
-EXACT CAREER TO RESEARCH:
+EXACT CAREER:
 ${career}
 
 DO NOT CHANGE THIS CAREER.
 
 If the input contains a specialization,
-research that specialization exactly.
+keep that specialization central.
 
 COUNTRY:
 India
 
 LIVE WEB EVIDENCE:
-${evidence || "No usable live source was retrieved."}
+${evidence ||
+"No usable live source was retrieved."}
 
 Return ONLY one valid JSON object.
 
-Use exactly these keys:
+Use exactly:
 
 {
-  "career":"exact career name",
-  "what_it_involves":"clear day-to-day explanation",
-  "pros":["..."],
-  "cons":["..."],
-  "pay_india":"current India earning picture with experience/location/employer context",
-  "market_requirements":["..."],
-  "demand":"current India demand with careful evidence-based context",
-  "future_growth":"future outlook, opportunities and risks",
-  "step_by_step_path":["..."],
-  "academic_education":["..."],
-  "vocational_diploma":["..."],
-  "certifications":["..."],
-  "job_ready_skills":["..."],
-  "alternatives":["..."],
-  "barriers":["..."],
-  "rewards":["..."],
-  "public_discussion_themes":["..."],
-  "student_fit":"only discuss fit if student data was actually supplied; otherwise say that student-specific fit needs the student's data",
-  "family_concerns_addressed":["..."],
-  "sources":[
-    {
-      "title":"...",
-      "url":"...",
-      "why_relevant":"..."
-    }
-  ]
+  "career":"",
+  "what_it_involves":"",
+  "pros":[],
+  "cons":[],
+  "pay_india":"",
+  "market_requirements":[],
+  "demand":"",
+  "future_growth":"",
+  "step_by_step_path":[],
+  "academic_education":[],
+  "vocational_diploma":[],
+  "certifications":[],
+  "job_ready_skills":[],
+  "alternatives":[],
+  "barriers":[],
+  "rewards":[],
+  "public_discussion_themes":[],
+  "student_fit":"",
+  "family_concerns_addressed":[],
+  "sources":[]
 }
 
-QUALITY REQUIREMENTS:
+RULES:
 
-1. EXACT CAREER
-
-Do not substitute a nearby career.
-
-For example, if the career is:
-
-"orthopedic surgeon with spine speciality"
-
-keep the spine specialization central.
-
-2. INDIA FIRST
-
-Prioritize:
-
-- NMC
-- NBEMS
-- MCC
-- AIIMS
-- Indian government sources
-- Indian medical institutions
-- established Indian hospitals
-- reputable Indian job sources
-
-3. MEDICAL PATHWAY
-
-Where applicable, clearly separate:
-
-- MBBS
-- registration
-- postgraduate specialty
-- advanced fellowship/subspecialty training
-
-Do not imply that a fellowship is legally mandatory unless the evidence supports it.
-
-4. PAY
-
-Never invent a precise salary.
-
-Use source-supported ranges where available.
-
-Explain variation by:
-
-- experience
-- city
-- employer
-- private/public practice
-- practice type
-
-5. DEMAND
-
-Do not call a career "high demand"
-merely because jobs exist.
-
-Explain the evidence and limitations.
-
-6. MARKET REQUIREMENTS
-
-Give actual:
-
-- qualifications
-- skills
-- registration/licensing
-- experience
-- employer expectations
-
-only where supported.
-
-7. PATH
-
-Give a practical sequence.
-
-8. ALTERNATIVES
-
-Give genuinely comparable alternatives.
-
-9. PUBLIC DISCUSSION
-
-Summarise recurring discussion themes.
-
-Do not treat online discussions as statistical evidence.
-
-10. SOURCES
-
-Only use URLs present in the supplied evidence.
-
-Never manufacture URLs.
-
-11. COMPLETENESS
-
-Do not leave major fields empty simply because
-one source is weak.
-
-Use stable professional context carefully,
-and mark uncertainty.
-
-12. NO FILLER
-
-Avoid generic sentences that provide no useful information.
-
-13. JSON ONLY.
-
-No markdown fences.
-No explanation outside JSON.
+1. Keep the exact career.
+2. India first.
+3. Prefer official Indian sources.
+4. Never invent a source.
+5. Never invent salary.
+6. Never invent demand statistics.
+7. Never invent regulations.
+8. Explain uncertainty.
+9. Do not turn search-result quantity into proof of demand.
+10. For medical careers distinguish:
+   MBBS
+   registration
+   postgraduate training
+   advanced specialty training
+11. Explain the actual pathway.
+12. Give realistic barriers.
+13. Give comparable alternatives.
+14. Do not exaggerate future growth.
+15. Public discussions are themes, not statistical evidence.
+16. Do not make student-specific claims unless student data was supplied.
+17. JSON ONLY.
 `;
 }
 
 
 /* =========================================================
-   NORMALISE RESEARCH
+   RESEARCH NORMALIZATION
 ========================================================= */
 
 function normalizeResearch(
@@ -1119,7 +1125,8 @@ function normalizeResearch(
       ? { ...data }
       : {};
 
-  d.career = career;
+  d.career =
+    career;
 
   const aliases = {
 
@@ -1168,12 +1175,15 @@ function normalizeResearch(
     family_concerns_addressed: [
       "family_concerns"
     ]
-
   };
 
   for (
-    const [key, list]
-    of Object.entries(aliases)
+    const [
+      key,
+      list
+    ] of Object.entries(
+      aliases
+    )
   ) {
 
     if (
@@ -1181,16 +1191,19 @@ function normalizeResearch(
       d[key] === ""
     ) {
 
-      for (const a of list) {
+      for (
+        const alias of list
+      ) {
 
         if (
-          d[a] != null &&
-          d[a] !== ""
+          d[alias] != null &&
+          d[alias] !== ""
         ) {
 
-          d[key] = d[a];
-          break;
+          d[key] =
+            d[alias];
 
+          break;
         }
       }
     }
@@ -1212,27 +1225,29 @@ function normalizeResearch(
     "public_discussion_themes",
     "family_concerns_addressed",
     "sources"
-
   ];
 
-  for (const k of arrays) {
+  for (
+    const key of arrays
+  ) {
 
-    if (!Array.isArray(d[k])) {
+    if (
+      !Array.isArray(
+        d[key]
+      )
+    ) {
 
-      d[k] =
-        d[k]
-          ? [String(d[k])]
+      d[key] =
+        d[key]
+          ? [String(d[key])]
           : [];
-
     }
   }
 
   /*
-    Never trust URLs invented by the AI.
-
-    Only expose URLs that were actually retrieved
-    by CareerMitra's live search.
-  */
+   * NEVER expose URLs invented by the AI.
+   * Only URLs retrieved by our search layer.
+   */
 
   if (
     Array.isArray(sources) &&
@@ -1240,46 +1255,65 @@ function normalizeResearch(
   ) {
 
     d.sources =
-      sources.map(x => ({
-        title: cleanText(x.title),
-        url: cleanText(x.url),
-        snippet: cleanText(x.snippet),
-        why_relevant:
-          "Live source retrieved for this career research."
-      }));
+      sources.map(
+        source => ({
+          title:
+            cleanText(
+              source.title
+            ),
 
-  } else if (!d.sources.length) {
+          url:
+            cleanText(
+              source.url
+            ),
+
+          snippet:
+            cleanText(
+              source.snippet
+            ),
+
+          why_relevant:
+            "Live source retrieved for this career research."
+        })
+      );
+
+  } else if (
+    !d.sources.length
+  ) {
 
     d.sources = [];
-
   }
 
-  if (!d.what_it_involves) {
+  if (
+    !d.what_it_involves
+  ) {
 
     d.what_it_involves =
       `The ${career} role involves applying relevant knowledge and practical skills to solve problems and deliver useful outcomes.`;
-
   }
 
-  if (!d.pay_india) {
+  if (
+    !d.pay_india
+  ) {
 
     d.pay_india =
       "Current India salary could not be reliably verified from the retrieved sources.";
-
   }
 
-  if (!d.demand) {
+  if (
+    !d.demand
+  ) {
 
     d.demand =
       "Current demand could not be reliably verified from the retrieved sources.";
-
   }
 
-  if (!d.future_growth) {
+  if (
+    !d.future_growth
+  ) {
 
     d.future_growth =
       "Future growth could not be reliably verified from the retrieved sources.";
-
   }
 
   return d;
@@ -1287,7 +1321,7 @@ function normalizeResearch(
 
 
 /* =========================================================
-   LAST-RESORT RESEARCH FALLBACK
+   LAST-RESORT WEB FALLBACK
 ========================================================= */
 
 function webFallbackResearch(
@@ -1296,16 +1330,27 @@ function webFallbackResearch(
 ) {
 
   const usable =
-    sources.slice(0, 12);
+    sources.slice(
+      0,
+      12
+    );
 
   const sourceList =
-    usable.map(x => ({
-      title: x.title,
-      url: x.url,
-      snippet: x.snippet,
-      why_relevant:
-        "Retrieved as live evidence for this exact career in India."
-    }));
+    usable.map(
+      source => ({
+        title:
+          source.title,
+
+        url:
+          source.url,
+
+        snippet:
+          source.snippet,
+
+        why_relevant:
+          "Retrieved as live evidence for this exact career in India."
+      })
+    );
 
   const text =
     usable
@@ -1316,93 +1361,85 @@ function webFallbackResearch(
       .join(" ");
 
   const medical =
-    /surgeon|doctor|physician|orthopedic|orthopaedic|cardio|neuro|radiolog|dermatolog|anesthes|anaesthes|patholog|pediatric|paediatric|oncolog|dentist/i
-      .test(career);
+    /surgeon|doctor|physician|orthopedic|orthopaedic|cardio|neuro|radiolog|dermatolog|anesthes|anaesthes|patholog|pediatric|paediatric|oncolog|dentist/i.test(
+      career
+    );
 
   const spine =
-    /spine|spinal/i.test(career);
+    /spine|spinal/i.test(
+      career
+    );
 
-  /*
-    This is deliberately a LAST-RESORT
-    source-backed response.
+  const path =
+    medical
+      ? [
 
-    It should never pretend to be AI synthesized.
-  */
+          "Complete the required undergraduate medical education pathway in India, typically MBBS for a medical specialist career.",
 
-  const path = medical
+          "Complete the applicable internship and registration requirements under the current Indian regulatory framework.",
 
-    ? [
+          "Enter the relevant postgraduate specialty pathway through the applicable entrance and counselling process.",
 
-        "Complete the required undergraduate medical education pathway in India, typically MBBS for a medical specialist career.",
+          spine
+            ? "After orthopaedic specialty training, build advanced spine expertise through appropriate supervised training or fellowship where applicable."
+            : "Build supervised specialist clinical and procedural experience.",
 
-        "Complete the applicable compulsory registration and internship requirements under the current Indian regulatory framework.",
+          "Continue professional development and verify current credential and registration requirements."
+        ]
 
-        "Enter the relevant postgraduate specialty pathway through the currently applicable entrance and counselling process.",
+      : [
 
-        spine
-          ? "After orthopaedic specialty training, build advanced spine expertise through appropriate supervised training or fellowship where applicable."
-          : "Build supervised specialist clinical and procedural experience.",
+          `Build the academic foundation required for ${career}.`,
 
-        "Continue professional development, evidence-based practice and any applicable registration or credential requirements."
+          "Complete relevant higher education or professional training.",
 
-      ]
+          "Build practical skills through projects, supervised work or internships.",
 
-    : [
+          "Add relevant certifications only when they are genuinely useful for the target role.",
 
-        `Build the academic foundation required for ${career}.`,
+          "Gain experience and continue skill development."
+        ];
 
-        "Complete the relevant higher education or professional training pathway.",
+  const education =
+    medical
+      ? [
 
-        "Build practical skills through projects, supervised work or internships where applicable.",
+          "Medical undergraduate education is the foundation for the specialist pathway.",
 
-        "Add relevant certifications only when they are valued for the target role.",
+          "Postgraduate specialty training is normally required for specialist medical practice.",
 
-        "Gain experience and continue skill development as the market changes."
+          spine
+            ? "Advanced spine-focused training may be pursued after the core orthopaedic pathway; exact requirements should be checked against current rules."
+            : "Exact specialty qualification requirements should be verified against current Indian regulations and institutions."
+        ]
 
-      ];
+      : [
 
+          "The required academic qualification depends on the exact role and employer.",
 
-  const education = medical
-
-    ? [
-
-        "Medical undergraduate education is the foundation for the specialist pathway.",
-
-        "Postgraduate specialty training is normally required for specialist medical practice.",
-
-        spine
-          ? "Advanced spine-focused training may be pursued after the core orthopaedic pathway; exact requirements vary by institution and should be checked against current rules."
-          : "The exact specialty qualification should be verified against current NMC/NBEMS and institution-specific requirements."
-
-      ]
-
-    : [
-
-        "The required academic qualification depends on the exact role and employer.",
-
-        "Current course, university and employer requirements should be checked before choosing a programme."
-
-      ];
-
+          "Current course and employer requirements should be checked before choosing a programme."
+        ];
 
   const requirements =
     usable
-      .slice(0, 8)
+      .slice(
+        0,
+        8
+      )
       .map(
         x =>
           `${x.title}${x.snippet ? ` — ${x.snippet}` : ""}`
       );
 
-
   const hasSalaryEvidence =
-    /salary|lakh|lpa|₹|rs\.?\s?\d|inr/i
-      .test(text);
-
+    /salary|lakh|lpa|₹|rs\.?\s?\d|inr/i.test(
+      text
+    );
 
   const hasTrainingEvidence =
-    /mbbs|ms |dnb|fellowship|registration|nmc|nbems|residency/i
-      .test(text);
-
+    /mbbs|ms |dnb|fellowship|registration|nmc|nbems|residency/i.test(
+      text
+    );
 
   return normalizeResearch(
 
@@ -1412,247 +1449,140 @@ function webFallbackResearch(
 
       what_it_involves:
         medical
-
-          ? `${career} is a specialist medical career involving patient assessment, diagnosis, treatment planning, procedures or surgery where applicable, follow-up and continued professional learning. The exact scope depends on the specialist's training and practice setting.`
-
-          : `${career} involves applying the knowledge and practical skills specific to the role, working with relevant tools or systems, solving real problems and delivering outcomes for an employer or client.`,
+          ? `${career} is a specialist medical career involving patient assessment, diagnosis, treatment planning, procedures or surgery where applicable, follow-up and continued professional learning.`
+          : `${career} involves applying the knowledge and practical skills specific to the role, solving real problems and delivering outcomes.`,
 
       pros:
-
         medical
-
           ? [
-
               "High level of specialised professional responsibility.",
-
               "Potential to make a direct impact on patient outcomes.",
-
-              "Scope to build deep expertise and, depending on the career, teaching, research or private-practice opportunities."
-
+              "Scope to build deep expertise."
             ]
-
           : [
-
               "Opportunity to develop specialised expertise.",
-
-              "Potential for multiple employer or industry pathways as experience grows.",
-
+              "Potential for multiple employer or industry pathways.",
               "Scope for continued learning and progression."
-
             ],
-
 
       cons:
-
         medical
-
           ? [
-
               "Long and demanding training pathway.",
-
-              "High responsibility and the need for continuous skill development.",
-
-              "Workload, location, employer and practice setting can strongly affect lifestyle."
-
+              "High responsibility.",
+              "Workload and lifestyle can vary significantly by practice setting."
             ]
-
           : [
-
-              "Competition and entry requirements vary by employer.",
-
+              "Competition varies by employer.",
               "Skills need to be updated as the field changes.",
-
-              "Early-career outcomes can vary significantly by location and employer."
-
+              "Early-career outcomes can vary by location and employer."
             ],
 
-
       pay_india:
-
         hasSalaryEvidence
-
-          ? "The live results contain salary or earning references, but they should be interpreted by experience, city, employer and practice type. Exact figures are not asserted here without a reliable cross-source salary dataset."
-
-          : "No sufficiently reliable current India salary range was established from the retrieved sources; salary varies substantially by experience, location, employer and practice type.",
-
+          ? "The retrieved results contain salary references, but exact figures should be interpreted according to experience, city, employer and practice type."
+          : "No sufficiently reliable current India salary range was established from the retrieved sources.",
 
       market_requirements:
         requirements,
 
-
       demand:
-
         usable.length
-
-          ? `Live India search results were found for ${career}. They show current activity around the career, but search-result volume alone is not a national demand statistic. Demand should be interpreted with location, employer, experience and specialization in mind.`
-
+          ? `Live India search results were found for ${career}. They show current activity, but search-result volume alone is not a national demand statistic.`
           : `No usable live India sources were retrieved for ${career}.`,
 
-
       future_growth:
-
-        medical
-
-          ? "The long-term outlook depends on population healthcare needs, specialist capacity, technology, referral patterns and the balance between public and private healthcare. Current growth should be treated as an evidence-based judgement rather than a guaranteed outcome."
-
-          : "Future growth depends on industry demand, technology, employer needs and the ability to keep skills current.",
-
+        "Future growth depends on industry or healthcare demand, technology, employer needs and the ability to keep skills current.",
 
       step_by_step_path:
         path,
 
-
       academic_education:
         education,
 
-
       vocational_diploma:
-
         medical
-
           ? []
-
           : [
-              "Diploma or vocational routes may be relevant only if they are explicitly accepted for the target role."
+              "Vocational or diploma routes may be relevant only where they are accepted for the exact target role."
             ],
-
 
       certifications:
-
         medical
-
           ? [
-
-              "Current registration and specialist qualification requirements should be verified with the applicable Indian authority.",
-
+              "Verify current registration and qualification requirements with the applicable Indian authority.",
               hasTrainingEvidence
-                ? "The retrieved sources contain training or qualification references; verify the exact current pathway before making an education decision."
-                : "No specific certification claim is made because the retrieved evidence was insufficient."
-
+                ? "Retrieved sources contain training or qualification references; verify the exact current pathway."
+                : "No specific certification claim is made because evidence was insufficient."
             ]
-
           : [
-
-              "Choose certifications that are explicitly relevant to the target job rather than collecting certificates without practical experience."
-
+              "Choose certifications that are genuinely relevant to the target job."
             ],
-
 
       job_ready_skills:
-
         medical
-
           ? [
-
-              "Clinical assessment and decision-making",
-
-              "Relevant procedural or surgical skills under appropriate supervision",
-
-              "Patient and family communication",
-
-              "Imaging or diagnostic interpretation where relevant",
-
+              "Clinical assessment",
+              "Decision-making",
+              "Relevant procedural skills",
+              "Patient communication",
               "Evidence-based practice",
-
-              "Teamwork and multidisciplinary coordination"
-
+              "Teamwork"
             ]
-
           : [
-
               "Role-specific technical skills",
-
               "Communication",
-
               "Problem solving",
-
-              "Practical project or work evidence",
-
+              "Practical project evidence",
               "Interview and workplace skills"
-
             ],
-
 
       alternatives:
-
         medical
-
           ? [
-
-              "Related specialist pathways within the same broad medical field",
-
-              "Academic, teaching or research pathways after specialist training",
-
-              "Hospital-based clinical roles with adjacent expertise"
-
+              "Related specialist pathways",
+              "Academic or teaching pathways",
+              "Research pathways",
+              "Adjacent hospital-based roles"
             ]
-
           : [],
 
-
       barriers:
-
         medical
-
           ? [
-
               "Long education and training timeline",
-
-              "Competitive entry into specialist training",
-
+              "Competitive specialist training",
               "High professional responsibility",
-
-              "Need for continuous learning and credential maintenance"
-
+              "Continuous learning"
             ]
-
           : [
-
-              "Competition for entry-level roles",
-
-              "Need for demonstrable practical skills",
-
-              "Changing technology and employer expectations"
-
+              "Competition",
+              "Need for demonstrable skills",
+              "Changing technology"
             ],
-
 
       rewards:
-
         medical
-
           ? [
-
               "Specialist expertise",
-
-              "Potential to improve patient outcomes",
-
-              "Professional growth and teaching or research opportunities",
-
-              "Potential to develop a specialised practice"
-
+              "Potential patient impact",
+              "Professional growth",
+              "Teaching or research opportunities"
             ]
-
           : [
-
-              "Expertise and professional growth",
-
-              "Potential for progression into higher-responsibility roles",
-
-              "Opportunity to work across different organisations or industries"
-
+              "Professional expertise",
+              "Career progression",
+              "Potential to work across organisations or industries"
             ],
 
-
-      public_discussion_themes: [],
-
+      public_discussion_themes:
+        [],
 
       student_fit:
-        "Student-specific fit cannot be safely inferred from career research alone; CareerMitra should combine this research with the student's Test Zone and Personal Vault data.",
+        "Student-specific fit cannot safely be inferred from career research alone. CareerMitra should combine this research with Test Zone and Personal Vault evidence.",
 
-
-      family_concerns_addressed: [],
-
+      family_concerns_addressed:
+        [],
 
       sources:
         sourceList
@@ -1661,7 +1591,6 @@ function webFallbackResearch(
 
     career,
     sourceList
-
   );
 }
 
@@ -1670,7 +1599,9 @@ function webFallbackResearch(
    RESEARCH QUALITY CHECK
 ========================================================= */
 
-function researchNeedsRepair(data) {
+function researchNeedsRepair(
+  data
+) {
 
   if (
     !data ||
@@ -1700,23 +1631,26 @@ function researchNeedsRepair(data) {
   ];
 
   const missing =
-    required.filter(k =>
-
-      data[k] == null ||
-      data[k] === "" ||
-      (
-        Array.isArray(data[k]) &&
-        data[k].length === 0
-      )
-
+    required.filter(
+      key =>
+        data[key] == null ||
+        data[key] === "" ||
+        (
+          Array.isArray(
+            data[key]
+          ) &&
+          data[key].length === 0
+        )
     );
 
-  return missing.length >= 4;
+  return (
+    missing.length >= 4
+  );
 }
 
 
 /* =========================================================
-   VERCEL API HANDLER
+   MAIN VERCEL HANDLER
 ========================================================= */
 
 export default async function handler(
@@ -1724,9 +1658,13 @@ export default async function handler(
   res
 ) {
 
-  if (req.method !== "POST") {
+  if (
+    req.method !== "POST"
+  ) {
 
-    return res.status(405).json({
+    return res.status(
+      405
+    ).json({
 
       ok: false,
 
@@ -1734,43 +1672,37 @@ export default async function handler(
         "Method not allowed"
 
     });
-
   }
-
 
   try {
 
     const body =
       typeof req.body === "string"
-
         ? JSON.parse(
             req.body || "{}"
           )
-
         : (
             req.body || {}
           );
-
 
     const prompt =
       cleanText(
         body.prompt
       );
 
-
     const webSearch =
       body.webSearch === true;
-
 
     const suppliedCareer =
       cleanText(
         body.career
       );
 
-
     if (!prompt) {
 
-      return res.status(400).json({
+      return res.status(
+        400
+      ).json({
 
         ok: false,
 
@@ -1778,7 +1710,6 @@ export default async function handler(
           "Missing prompt"
 
       });
-
     }
 
 
@@ -1789,18 +1720,22 @@ export default async function handler(
 
     let career =
       suppliedCareer ||
-      extractCareer(prompt);
+      extractCareer(
+        prompt
+      );
 
 
     /* =====================================================
-       LIVE CAREER RESEARCH
+       LIVE WEB RESEARCH
     ===================================================== */
 
     if (webSearch) {
 
       if (!career) {
 
-        return res.status(400).json({
+        return res.status(
+          400
+        ).json({
 
           ok: false,
 
@@ -1808,9 +1743,7 @@ export default async function handler(
             "Could not determine the exact career."
 
         });
-
       }
-
 
       const queries = [
 
@@ -1841,9 +1774,16 @@ export default async function handler(
       ];
 
 
+      /*
+       * Search queries run in parallel.
+       * This is web search, not OpenRouter calls.
+       */
+
       const groups =
         await Promise.all(
-          queries.map(searchWeb)
+          queries.map(
+            searchWeb
+          )
         );
 
 
@@ -1858,54 +1798,55 @@ export default async function handler(
       sources =
         groups
           .flat()
-          .filter(x => {
+          .filter(
+            item => {
 
-            if (
-              !x.url ||
-              seen.has(x.url)
-            ) {
-              return false;
+              if (
+                !item.url ||
+                seen.has(
+                  item.url
+                )
+              ) {
+                return false;
+              }
+
+              const combined =
+                `${item.title} ${item.snippet}`;
+
+
+              /*
+               * Drop obvious foreign
+               * local-service results.
+               */
+
+              if (
+                badCountry.test(
+                  combined
+                ) &&
+                !/india|indian/i.test(
+                  combined
+                )
+              ) {
+                return false;
+              }
+
+
+              seen.add(
+                item.url
+              );
+
+              return true;
             }
-
-
-            const combined =
-              `${x.title} ${x.snippet}`;
-
-
-            /*
-              CareerMitra is India-first.
-
-              Remove obvious foreign local-service results.
-            */
-
-            if (
-              badCountry.test(
-                combined
-              ) &&
-              !/india|indian/i.test(
-                combined
-              )
-            ) {
-
-              return false;
-
-            }
-
-
-            seen.add(x.url);
-
-            return true;
-
-          })
-
-
+          )
           .sort(
             (a, b) =>
-              sourcePriority(b.url) -
-              sourcePriority(a.url)
+              sourcePriority(
+                b.url
+              ) -
+              sourcePriority(
+                a.url
+              )
           )
-
-
           .slice(
             0,
             20
@@ -1915,15 +1856,15 @@ export default async function handler(
       const evidence =
         sources
           .map(
-            (x, i) =>
-
-              `[SOURCE ${i + 1}]
-TITLE: ${x.title}
-URL: ${x.url}
-SNIPPET: ${x.snippet}`
-
+            (source, index) =>
+              `[SOURCE ${index + 1}]
+TITLE: ${source.title}
+URL: ${source.url}
+SNIPPET: ${source.snippet}`
           )
-          .join("\n\n");
+          .join(
+            "\n\n"
+          );
 
 
       finalPrompt =
@@ -1931,19 +1872,18 @@ SNIPPET: ${x.snippet}`
           career,
           evidence
         );
-
     }
 
+
+    /* =====================================================
+       FIRST AI REQUEST
+    ===================================================== */
 
     let ai;
 
     let usedFallback =
       false;
 
-
-    /* =====================================================
-       PRIMARY AI REQUEST
-    ===================================================== */
 
     try {
 
@@ -1962,14 +1902,10 @@ SNIPPET: ${x.snippet}`
 
 
       /*
-        IMPORTANT:
-
-        Live research gets source-backed recovery
-        ONLY after AI has failed.
-
-        Normal Test Zone / analysis does NOT
-        silently manufacture a result here.
-      */
+       * LIVE RESEARCH:
+       * only after complete AI failure,
+       * use source-backed recovery.
+       */
 
       if (
         webSearch &&
@@ -1977,18 +1913,24 @@ SNIPPET: ${x.snippet}`
         sources.length
       ) {
 
-        return res.status(200).json({
+        return res.status(
+          200
+        ).json({
 
           ok: true,
 
           ai: false,
 
-          fallbackUsed: true,
+          fallbackUsed:
+            true,
 
-          aiFailed: true,
+          aiFailed:
+            true,
 
           rateLimited:
-            Number(error?.status) === 429,
+            Number(
+              error?.status
+            ) === 429,
 
           retryAfter:
             error?.retryAfter ||
@@ -2000,7 +1942,8 @@ SNIPPET: ${x.snippet}`
               sources
             ),
 
-          model: null,
+          model:
+            null,
 
           sources,
 
@@ -2008,13 +1951,18 @@ SNIPPET: ${x.snippet}`
             "Source-backed recovery was used only after the AI recovery chain failed."
 
         });
-
       }
 
 
+      /*
+       * Non-web AI failures should NOT
+       * silently fabricate an answer.
+       */
+
       const status =
         Number(
-          error?.status || 503
+          error?.status ||
+          503
         );
 
 
@@ -2026,9 +1974,11 @@ SNIPPET: ${x.snippet}`
 
         ok: false,
 
-        aiFailed: true,
+        aiFailed:
+          true,
 
-        fallbackAllowed: true,
+        fallbackAllowed:
+          true,
 
         rateLimited:
           status === 429,
@@ -2044,7 +1994,6 @@ SNIPPET: ${x.snippet}`
           )
 
       });
-
     }
 
 
@@ -2064,16 +2013,11 @@ SNIPPET: ${x.snippet}`
 
     if (webSearch) {
 
-      /*
-        A successful API response is not automatically
-        a successful research response.
-
-        If JSON is incomplete, give AI another chance.
-      */
-
       if (
         !data ||
-        researchNeedsRepair(data)
+        researchNeedsRepair(
+          data
+        )
       ) {
 
         try {
@@ -2081,23 +2025,22 @@ SNIPPET: ${x.snippet}`
           const repairPrompt =
             `${finalPrompt}
 
-RECOVERY INSTRUCTION:
+RECOVERY PASS:
 
-The previous response was incomplete or malformed.
+The previous AI response was incomplete or malformed.
 
-Rebuild the COMPLETE JSON object now.
+Rebuild the COMPLETE JSON object.
 
-Every major section must contain useful
-career-specific information grounded in
-the supplied evidence.
+Keep the exact career.
 
-Do not omit sections merely because
-one source is weak.
+Use the supplied evidence.
 
-Do not invent unsupported facts.
+Do not invent information.
 
-Return JSON only.`;
+Fill every major section with useful,
+career-specific information where evidence permits.
 
+Clearly state uncertainty where evidence is weak.`;
 
           const repaired =
             await requestAI(
@@ -2105,7 +2048,6 @@ Return JSON only.`;
               true,
               true
             );
-
 
           const repairedData =
             parseJSON(
@@ -2125,27 +2067,21 @@ Return JSON only.`;
 
             ai =
               repaired;
-
           }
 
-        } catch (
-          repairError
-        ) {
+        } catch (repairError) {
 
           console.error(
             "CareerMitra AI research repair failed",
             repairError
           );
-
         }
-
       }
 
 
       /*
-        Only after the AI response AND AI repair
-        fail do we use the deterministic fallback.
-      */
+       * ONLY NOW use deterministic fallback.
+       */
 
       if (data) {
 
@@ -2166,17 +2102,17 @@ Return JSON only.`;
 
         usedFallback =
           true;
-
       }
-
     }
 
 
     /* =====================================================
-       SUCCESS
+       FINAL RESPONSE
     ===================================================== */
 
-    return res.status(200).json({
+    return res.status(
+      200
+    ).json({
 
       ok: true,
 
@@ -2187,7 +2123,8 @@ Return JSON only.`;
         usedFallback,
 
       data:
-        data || ai.text,
+        data ||
+        ai.text,
 
       model:
         ai.model,
@@ -2208,13 +2145,17 @@ Return JSON only.`;
     );
 
 
-    return res.status(503).json({
+    return res.status(
+      503
+    ).json({
 
       ok: false,
 
-      aiFailed: true,
+      aiFailed:
+        true,
 
-      fallbackAllowed: true,
+      fallbackAllowed:
+        true,
 
       error:
         cleanText(
@@ -2223,6 +2164,5 @@ Return JSON only.`;
         )
 
     });
-
   }
 }
