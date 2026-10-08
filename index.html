@@ -588,104 +588,48 @@ PERSONAL VAULT:
 ${JSON.stringify(vault)}`;
 }
 async function makeQuestions(s){
-  const v=s.vault;
-  const vault={
-    interests:v.interests,
-    hobbies:v.hobbies,
-    likings:v.likings,
-    strongSubjects:arr(v.subjects).map(x=>`${x.name} (${LEVELS[x.level-1]||'Good'})`),
-    preferredRolesInPriorityOrder:roleNames(v),
-    verifiedSkills:arr(v.skills).map(x=>`${x.name} (${x.level||''})`),
-    chosenField:v.field,
-    reasonForField:v.whyField,
-    reasonNotOtherFields:v.whyNotOthers,
-    alternativesConsidered:v.alternatives
-  };
+  const v=s.vault,vault={interests:v.interests,hobbies:v.hobbies,likings:v.likings,strongSubjects:arr(v.subjects).map(x=>`${x.name} (${LEVELS[x.level-1]||'Good'})`),preferredRolesInPriorityOrder:roleNames(v),verifiedSkills:arr(v.skills).map(x=>`${x.name} (${x.level||''})`),chosenField:v.field,reasonForField:v.whyField,reasonNotOtherFields:v.whyNotOthers,alternativesConsidered:v.alternatives};
   const stage=STAGES[s.stage]?STAGES[s.stage].t+' — '+STAGES[s.stage].d:'student';
-  S.tload=0;
-  window.CM_TEST_AI_SOURCES={};
+  S.tload=0; window.CM_TEST_AI_SOURCES={};
 
-  /* One AI request for the complete test instead of 3 retries per section.
-     This keeps Test Zone fast while still allowing section-level fallback. */
-  const planText=TQ_PLAN.map(([cat,n])=>`${cat}: ${n} questions`).join('\n');
-  const prompt=`You are CareerMitra's AI test generator.
+  const run=async([cat,n])=>{
+    // Two complete AI attempts. The API itself has multiple free-model retries.
+    for(let attempt=0;attempt<2;attempt++){
+      const result=await aiJson(batchPrompt(cat,n,vault,stage));
+      const q=validQuestions(result,n);
+      if(q&&q.length===n&&(!VAULT_CATS.includes(cat)||usesVault(q,v)>=Math.ceil(n*0.6))){
+        q.forEach(x=>{x.cat=cat;if(!x.basedOn)x.basedOn=VAULT_CATS.includes(cat)?'Your vault':'AI-generated from your profile'});
+        return q;
+      }
+    }
+    return null;
+  };
 
-Create the COMPLETE ${TQ_N}-question personality and career-orientation test in ONE response.
+  // All six sections are requested concurrently. This prevents the first
+  // slow section from blocking the entire Test Zone.
+  const results=await Promise.all(TQ_PLAN.map(async item=>{
+    const [cat,n]=item;
+    const aiResult=await run(item);
+    S.tload++; if(S.tstate==='loading')render(true);
 
-Student stage: ${stage}
-
-PERSONAL VAULT:
-${JSON.stringify(vault)}
-
-QUESTION PLAN:
-${planText}
-
-Rules:
-1. Generate exactly the requested number for every category.
-2. Return exactly ${TQ_N} questions total.
-3. Use the Personal Vault strongly for categories related to interests, likings, subjects, skills and career preferences.
-4. Personality and situation questions must be neutral and simple.
-5. Holland trait options must use R, I, A, S, E, C. Each personality-style question has 4 different trait letters.
-6. Basic intelligence questions have one correct answer using correct:true and no Holland trait.
-7. Do not use numeric scores or scoring language.
-8. Every question must be different.
-9. Keep wording short and student-friendly.
-10. Return ONLY this JSON shape:
-{"questions":[{"cat":"Personality","basedOn":"...","q":"...","o":[{"text":"...","trait":"R"}]}]}
-
-The cat value MUST exactly match one of:
-${TQ_PLAN.map(x=>x[0]).join(', ')}
-`;
-
-  let aiQuestions=null;
-  try{
-    const raw=await aiJson(prompt,{fast:true});
-    if(raw&&Array.isArray(raw.questions)) aiQuestions=raw.questions;
-  }catch(e){
-    window.CM_AI_ERROR=e&&e.message?e.message:String(e);
-  }
-
-  /* Validate each category independently. Failed categories use the existing
-     built-in generator, so one bad AI response never blocks the test. */
-  const out={};
-  const sources={};
-
-  for(const [cat,n] of TQ_PLAN){
-    const candidates=Array.isArray(aiQuestions)
-      ? aiQuestions.filter(x=>x&&x.cat===cat)
-      : [];
-
-    let q=validQuestions({questions:candidates},n);
-
-    if(q&&q.length===n&&(!VAULT_CATS.includes(cat)||usesVault(q,v)>=Math.ceil(n*0.6))){
-      q.forEach(x=>{
-        x.cat=cat;
-        if(!x.basedOn)x.basedOn=VAULT_CATS.includes(cat)?'Your vault':'AI-generated from your profile';
-      });
-      out[cat]=q;
-      sources[cat]='ai';
+    if(aiResult){
       window.CM_TEST_AI_SOURCES[cat]='ai';
-    }else{
-      const built=localCat(v,cat,n);
-      out[cat]=built;
-      sources[cat]='builtin';
-      window.CM_TEST_AI_SOURCES[cat]='builtin';
+      return [cat,aiResult];
     }
 
-    S.tload++;
-    if(S.tstate==='loading')render(true);
-  }
+    // Built-in is ONLY the final safety net after the AI + API retry chain.
+    const built=localCat(v,cat,n);
+    window.CM_TEST_AI_SOURCES[cat]='builtin';
+    return [cat,built];
+  }));
 
-  const q=TQ_PLAN.flatMap(([cat])=>out[cat]||[]);
-  const failed=TQ_PLAN.filter(([cat,n])=>!out[cat]||out[cat].length!==n).map(([cat])=>cat);
+  const out=Object.fromEntries(results);
+  const failed=TQ_PLAN.filter(([cat,n])=>!Array.isArray(out[cat])||out[cat].length!==n).map(([cat])=>cat);
+  if(failed.length){window.CM_AI_ERROR=`Test Zone could not generate: ${failed.join(', ')}`;return null;}
 
-  if(failed.length){
-    window.CM_AI_ERROR=`Test Zone could not generate: ${failed.join(', ')}`;
-    return null;
-  }
-
-  const usedFallback=Object.values(sources).some(x=>x==='builtin');
-  return{q,src:usedFallback?'mixed':'ai',sources};
+  const q=TQ_PLAN.flatMap(([cat])=>out[cat]);
+  const usedFallback=Object.values(window.CM_TEST_AI_SOURCES).some(x=>x==='builtin');
+  return{q,src:usedFallback?'mixed':'ai',sources:{...window.CM_TEST_AI_SOURCES}};
 }
 
 /* ================= analysis ================= */
