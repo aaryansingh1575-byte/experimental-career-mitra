@@ -130,13 +130,23 @@ details.j>summary::-webkit-details-marker{display:none}
 @media(max-width:620px){.intro-page{padding:18px 12px}.intro-shell{padding:25px 18px;border-radius:23px}.intro-top{margin-bottom:27px}.intro-badge{display:none}.intro-title{font-size:42px;letter-spacing:-2px}.intro-copy{font-size:14px}.intro-steps{grid-template-columns:1fr}.intro-bottom .intro-cta{width:100%}}
 
 
-  .cm-ai-status{display:inline-flex;align-items:center;gap:8px;margin:10px 0 0;padding:0;border:0;background:transparent;font-size:12px;font-weight:700}
-  .cm-ai-dot{width:8px;height:8px;border-radius:50%;display:block;flex:0 0 8px;transition:.2s ease}
-  .cm-ai-status.green .cm-ai-dot{background:#22c55e;box-shadow:0 0 9px rgba(34,197,94,.75)}
-  .cm-ai-status.blue .cm-ai-dot{background:#3b82f6;box-shadow:0 0 9px rgba(59,130,246,.8)}
-  .cm-ai-status.orange .cm-ai-dot{background:#f59e0b;box-shadow:0 0 9px rgba(245,158,11,.8)}
-  .cm-ai-status.pink .cm-ai-dot{background:#ec4899;box-shadow:0 0 9px rgba(236,72,153,.8)}
-  .cm-ai-status.green{color:#16a34a}.cm-ai-status.blue{color:#2563eb}.cm-ai-status.orange{color:#d97706}.cm-ai-status.pink{color:#db2777}
+  .cm-ai-status{display:inline-flex;align-items:center;justify-content:center;width:12px;height:12px;margin:10px 0 0;padding:0;border:0;background:transparent}
+  .cm-ai-status.fallback{background:transparent}
+  .cm-ai-dot{width:8px;height:8px;border-radius:50%;background:#22c55e;box-shadow:0 0 9px rgba(34,197,94,.75);display:block}
+  .cm-ai-status.fallback .cm-ai-dot{background:#f59e0b;box-shadow:0 0 9px rgba(245,158,11,.8)}
+</style>
+
+<style>
+.cm-ai-status{display:inline-flex;align-items:center;gap:7px;font-weight:700}
+.cm-ai-dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+.cm-ai-status.green .cm-ai-dot{background:#22c55e;box-shadow:0 0 8px rgba(34,197,94,.65)}
+.cm-ai-status.blue .cm-ai-dot{background:#3b82f6;box-shadow:0 0 8px rgba(59,130,246,.65)}
+.cm-ai-status.orange .cm-ai-dot{background:#f59e0b;box-shadow:0 0 8px rgba(245,158,11,.65)}
+.cm-ai-status.pink .cm-ai-dot{background:#ec4899;box-shadow:0 0 8px rgba(236,72,153,.65)}
+.cm-ai-status.green .cm-ai-label{color:#22c55e}
+.cm-ai-status.blue .cm-ai-label{color:#60a5fa}
+.cm-ai-status.orange .cm-ai-label{color:#f59e0b}
+.cm-ai-status.pink .cm-ai-label{color:#ec4899}
 </style>
 </head>
 <body>
@@ -220,11 +230,8 @@ async function ai(){return AI_READY}
 async function aiJson(prompt,opts={}){
   if(!prompt||typeof prompt!=='string')return null;
   const webSearch=opts.webSearch===true||/live career research|research this career|internet research|web research/i.test(prompt);
-  const isTest=opts.purpose==='student test generation'||/CareerMitra's neutral Test Zone designer|QUESTION PLAN:|PERSONAL VAULT — THIS IS THE ONLY PERSONAL EVIDENCE/i.test(prompt);
-  const cacheKey=cmHash((webSearch?'web:':isTest?'test:':'ai:')+prompt);
-  // Test Zone must be freshly generated from the current Personal Vault.
-  // Never serve a 7-day cached question set for a test request.
-  const bypassCache=opts.bypassCache===true||isTest;
+  const cacheKey=cmHash((webSearch?'web:':'ai:')+prompt);
+  const bypassCache=opts.bypassCache===true;
   if(!bypassCache){const cached=cmReadCache(cacheKey);if(cached){AI_READY=true;window.CM_AI_ERROR='';return cached}}
   if(CM_AI_INFLIGHT.has(cacheKey))return CM_AI_INFLIGHT.get(cacheKey);
   const job=(CM_AI_QUEUE=CM_AI_QUEUE.then(async()=>{
@@ -239,8 +246,8 @@ async function aiJson(prompt,opts={}){
           prompt,
           webSearch,
           career:opts.career||'',
-          purpose:isTest?'student test generation':'',
-          testZone:isTest,
+          purpose:opts.purpose||'',
+          testZone:opts.testZone===true,
           vault:opts.vault||null,
           stage:opts.stage||''
         })
@@ -653,9 +660,9 @@ function validQuestions(r,count){
 }
 function questionQualityIssues(qs,v){
   const issues=[];
-  const moral=/\b(best|better|worse|good person|bad person|smart person|lazy|responsible person|irresponsible|should choose|must choose|right career|wrong career|safe choice|only sensible|guaranteed|perfect career)\b/i;
-  const leading=/\b(obviously|clearly|of course|definitely|only sensible|dream career|guaranteed|always|never)\b/i;
-  const absurd=/\b(do nothing|whatever|i don't care|i dont care|give up immediately|quit everything|sleep all day|ignore it completely)\b/i;
+  const moral=/\b(best|better|worse|good person|bad person|successful person|smart person|lazy|responsible person|irresponsible|should choose|must choose|right career|wrong career|safe choice|only sensible)\b/i;
+  const leading=/\b(obviously|clearly|of course|definitely|only sensible|dream career|perfect career|guaranteed|always|never)\b/i;
+  const absurd=/\b(do nothing|whatever|i don't care|i dont care|give up immediately|quit everything|sleep all day|ignore it completely|anything is fine)\b/i;
   const seenQ=new Set();
   const namedRoles=[...roleNames(v),v&&v.nonnegotiable,v&&v.field,...arr(v&&v.alternatives)].filter(Boolean).map(x=>String(x).trim().toLowerCase()).filter(x=>x.length>=4);
   qs.forEach((q,i)=>{
@@ -663,32 +670,26 @@ function questionQualityIssues(qs,v){
     const normQ=q.q.toLowerCase().replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim();
     if(seenQ.has(normQ))issues.push(`Q${i+1}: repeated question`); seenQ.add(normQ);
     if(!TQ_PLAN.some(([cat])=>cat.toLowerCase()===String(q.cat||'').trim().toLowerCase()))issues.push(`Q${i+1}: invalid category`);
-    if(q.q.length>260||opts.some(x=>x.length<3||x.length>160))issues.push(`Q${i+1}: option/question length problem`);
+    if(q.q.length>220||opts.some(x=>x.length<3||x.length>140))issues.push(`Q${i+1}: option/question length problem`);
     const lens=opts.map(x=>x.split(/\s+/).filter(Boolean).length);const min=Math.max(1,Math.min(...lens)),max=Math.max(...lens);
-    if(max/min>4.2)issues.push(`Q${i+1}: option lengths are not comparable`);
-    if(q.cat!=='Basic intelligence'&&opts.some(x=>moral.test(x)||leading.test(x)||absurd.test(x)))issues.push(`Q${i+1}: leading/value-loaded/absurd option`);
-    if(q.cat!=='Basic intelligence'&&namedRoles.some(name=>opts.some(x=>x.toLowerCase().includes(name))))issues.push(`Q${i+1}: option directly names a personal career/field`);
-    if(new Set(opts.map(x=>x.toLowerCase().replace(/[^a-z0-9 ]/gi,'').replace(/\s+/g,' '))).size<4)issues.push(`Q${i+1}: duplicate options`);
+    if(max/min>3.2)issues.push(`Q${i+1}: option lengths are not comparable`);
+    if(q.cat!=='Basic intelligence'&&q.cat!=='Strong subject / skills'&&opts.some(x=>moral.test(x)||leading.test(x)||absurd.test(x)))issues.push(`Q${i+1}: leading/value-loaded/absurd option`);
+    if(q.cat!=='Basic intelligence'&&q.cat!=='Strong subject / skills'&&namedRoles.some(name=>opts.some(x=>x.toLowerCase().includes(name))))issues.push(`Q${i+1}: option directly names a personal career/field`);
+    if(q.cat!=='Basic intelligence'&&q.cat!=='Strong subject / skills'&&new Set(opts.map(x=>x.toLowerCase().replace(/[^a-z0-9 ]/gi,''))).size<4)issues.push(`Q${i+1}: duplicate options`);
     if(!String(q.basedOn||'').trim())issues.push(`Q${i+1}: missing evidence source`);
+    if(q.cat==='Interests & likings'){
+      const src=exactVaultSourcesFor(q.cat,v);if(src.length && !src.some(x=>vaultSourceMatch(String(q.basedOn||'')+' '+q.q,x)))issues.push(`Q${i+1}: not grounded in an interest/hobby/liking from the Vault`);
+    }
+    if(q.cat==='Strong subject / skills'){
+      const src=exactVaultSourcesFor(q.cat,v);if(src.length && !src.some(x=>vaultSourceMatch(String(q.basedOn||'')+' '+q.q,x)))issues.push(`Q${i+1}: not grounded in a subject/skill from the Vault`);
+    }
+    if(q.cat==='Career opinion'){
+      const src=exactVaultSourcesFor(q.cat,v);if(src.length && !src.some(x=>vaultSourceMatch(String(q.basedOn||'')+' '+q.q,x)))issues.push(`Q${i+1}: not grounded in the student's stated career/field/alternative`);
+    }
   });
   const cats={};qs.forEach(q=>(cats[q.cat]??=[]).push(q));
   for(const [cat,n] of TQ_PLAN){if((cats[cat]||[]).length!==n)issues.push(`${cat}: expected ${n}, got ${(cats[cat]||[]).length}`)}
-
-  // Hard grounding gate: at least 3/4 Interest and 3/4 Subject/Skill and
-  // 3/5 Career Opinion questions must reference real Vault evidence. We use
-  // semantic token matching, not exact full-string matching, so valid AI wording
-  // is not rejected merely because it paraphrases a Vault item.
-  const grounding={
-    'Interests & likings':[...arr(v&&v.interests),...arr(v&&v.hobbies),...arr(v&&v.likings)],
-    'Strong subject / skills':[...arr(v&&v.subjects).map(x=>x&&x.name),...arr(v&&v.skills).map(x=>x&&x.name)],
-    'Career opinion':[v&&v.field,v&&v.nonnegotiable,...roleNames(v||{}),...arr(v&&v.alternatives)]
-  };
-  for(const cat of ['Interests & likings','Strong subject / skills','Career opinion']){
-    const src=[...new Set((grounding[cat]||[]).filter(Boolean).map(String))];
-    const got=(cats[cat]||[]).filter(q=>src.some(x=>vaultSourceMatch(String(q.basedOn)+' '+q.q,x))).length;
-    const required=src.length? (cat==='Career opinion'?3:3) : 0;
-    if(required&&got<required)issues.push(`${cat}: insufficient Personal Vault grounding (${got}/${required})`);
-  }
+  for(const cat of VAULT_CATS){const n=TQ_PLAN.find(x=>x[0]===cat)?.[1]||0;const got=(cats[cat]||[]).length;if(n){const need=Math.max(1,Math.ceil(n*.75));const hit=usesVault(cats[cat]||[],v);if(hit<need)issues.push(`${cat}: only ${hit}/${n} questions are grounded in the Personal Vault`)}}
   return issues;
 }
 
@@ -801,44 +802,31 @@ QUALITY AUDIT FAILED
 The previous response did not pass these checks:
 ${issues.slice(0,40).join('\n')}
 Generate the COMPLETE test again. Keep every question neutral, natural and grounded in the student's actual Vault. Do not defend the previous draft. Return ONLY JSON.`;
-    result=await aiJson(repairPrompt,{bypassCache:true,purpose:'student test generation',testZone:true,vault,stage});
+    result=await aiJson(repairPrompt,{
+      bypassCache:true,
+      purpose:'student test generation',
+      testZone:true,
+      vault,
+      stage
+    });
     all=validQuestions(result,TQ_N)||[];
     issues=all.length===TQ_N?questionQualityIssues(all,v):['AI repair was incomplete or invalid.'];
   }
 
   if(all.length===TQ_N && !issues.length){
-    const q=all.map(x=>({...x,cat:String(x.cat).trim(),source:'ai'}));
+    const q=all.map(x=>({...x,cat:String(x.cat).trim()}));
     const sources={};TQ_PLAN.forEach(([cat])=>sources[cat]='ai');
     window.CM_TEST_AI_SOURCES=sources;
     S.tload=TQ_PLAN.length;if(S.tstate==='loading')render(true);
     return{q,src:'ai',sources};
   }
 
-  // Last-resort safety net only. Keep any valid AI category and use the local
-  // generator only for categories that could not be recovered. This allows the
-  // Test Zone indicator to honestly show green/blue/orange/pink instead of
-  // turning the entire 25-question test into fallback after one bad category.
+  // Last-resort safety net only. It is NEVER marked as AI-generated.
+  // Normal operation should reach the AI branch above; this exists solely for a hard provider failure.
   const out={};const sources={};
-  const aiByCat={};
-  if(Array.isArray(all)&&all.length){
-    for(const q of all){
-      const cat=String(q.cat||'').trim();
-      if(TQ_PLAN.some(([c])=>c===cat)){
-        (aiByCat[cat]||(aiByCat[cat]=[])).push({...q,cat});
-      }
-    }
-  }
-  for(const [cat,n] of TQ_PLAN){
-    if((aiByCat[cat]||[]).length===n){
-      out[cat]=aiByCat[cat];
-      sources[cat]='ai';
-    }else{
-      out[cat]=localCat(v,cat,n);
-      sources[cat]='builtin';
-    }
-  }
+  for(const [cat,n] of TQ_PLAN){out[cat]=localCat(v,cat,n);sources[cat]='builtin';}
   window.CM_TEST_AI_SOURCES=sources;
-  const q=TQ_PLAN.flatMap(([cat])=>(out[cat]||[]).map(x=>({...x,source:sources[cat]==='ai'?'ai':'builtin'})));
+  const q=TQ_PLAN.flatMap(([cat])=>out[cat]||[]);
   if(q.length!==TQ_N){window.CM_AI_ERROR='The AI could not produce a valid complete test, and the recovery test was incomplete.';return null;}
   S.tload=TQ_PLAN.length;if(S.tstate==='loading')render(true);
   return{q,src:'fallback',sources};
@@ -1203,49 +1191,20 @@ function snapshot(v){
 }
 function testAIStatus(){
   const src=window.CM_TEST_AI_SOURCES||{};
-  let aiCount=0,fallbackCount=0;
-
-  // Prefer question-level source data when available.
-  const tq=S.tq&&Array.isArray(S.tq.q)?S.tq.q:[];
-  if(tq.length){
-    tq.forEach(q=>{
-      const source=String(q&&q.source||q&&q.aiSource||'').toLowerCase();
-      if(source==='ai'||source==='generated'||source==='openrouter')aiCount++;
-      else if(source==='builtin'||source==='fallback'||source==='local')fallbackCount++;
-    });
-  }
-
-  // Current generator stores category-level sources. Use them when question-level
-  // source metadata is unavailable.
-  if(!aiCount&&!fallbackCount){
-    Object.values(src).forEach(x=>{
-      if(x==='ai')aiCount++;
-      else if(x==='builtin'||x==='fallback')fallbackCount++;
-    });
-    // Each category represents its planned number of questions.
-    if(Object.keys(src).length){
-      aiCount=0;fallbackCount=0;
-      TQ_PLAN.forEach(([cat,n])=>{
-        if(src[cat]==='ai')aiCount+=n;
-        else if(src[cat]==='builtin'||src[cat]==='fallback')fallbackCount+=n;
-      });
-    }
-  }
-
+  const vals=Object.values(src);
+  const aiCount=vals.filter(x=>x==='ai').length;
+  const fallbackCount=vals.filter(x=>x==='builtin'||x==='fallback').length;
   const total=aiCount+fallbackCount;
   let color='orange',label='AI status unavailable';
-  if(total){
+  if(total>0){
     const ratio=aiCount/total;
-    if(aiCount===total){color='green';label='100% AI Generated';}
+    if(ratio===1){color='green';label='100% AI Generated';}
     else if(ratio>=0.70){color='blue';label='Mostly AI Generated';}
     else if(ratio>=0.40){color='orange';label='AI + Fallback';}
     else{color='pink';label='Mostly Fallback';}
   }
-
-  const aiPct=total?Math.round(aiCount/total*100):0;
-  const fbPct=total?Math.round(fallbackCount/total*100):0;
-  const detail=total?`${label} · ${aiPct}% AI · ${fbPct}% fallback`:'AI status unavailable';
-  return `<span class="cm-ai-status ${color}" title="${esc(detail)}" aria-label="${esc(detail)}"><span class="cm-ai-dot"></span><span>${esc(label)}</span></span>`;
+  const detail=total?`${label} · ${Math.round(aiCount/total*100)}% AI · ${aiCount} AI / ${fallbackCount} fallback`:'AI status unavailable';
+  return `<span class="cm-ai-status ${color}" title="${esc(detail)}" aria-label="${esc(detail)}"><span class="cm-ai-dot"></span><span class="cm-ai-label">${esc(label)}</span></span>`;
 }
 
 function sTest(){
