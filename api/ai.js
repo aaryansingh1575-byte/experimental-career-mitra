@@ -2,428 +2,357 @@
 
 export const maxDuration = 60;
 
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_URL =
+  "https://openrouter.ai/api/v1/chat/completions";
 
-const PRIMARY_MODEL =
+const MODELS = [
   process.env.OPENROUTER_MODEL ||
-  "nvidia/nemotron-3-ultra-550b-a55b:free";
-
-const FALLBACK_MODELS = [
-  PRIMARY_MODEL,
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
   "nvidia/nemotron-3.5-lightning:free",
   "nvidia/nemotron-3-super-120b-a12b:free",
   "openrouter/free"
-].filter((v, i, a) => v && a.indexOf(v) === i);
+].filter((m, i, a) => m && a.indexOf(m) === i);
 
-const MAX_ATTEMPTS = 3;
+const RETRYABLE = new Set([
+  408,
+  409,
+  425,
+  429,
+  500,
+  502,
+  503,
+  504
+]);
 
-function cleanText(value) {
-  return String(value ?? "")
-    .replace(/\u0000/g, "")
-    .trim();
-}
+const sleep = ms =>
+  new Promise(resolve => setTimeout(resolve, ms));
 
-function stripFence(text) {
-  return cleanText(text)
-    .replace(/^```(?:json)?/i, "")
-    .replace(/```$/i, "")
-    .trim();
+function extractText(data) {
+  if (!data) return "";
+
+  if (
+    typeof data.output_text === "string" &&
+    data.output_text.trim()
+  ) {
+    return data.output_text.trim();
+  }
+
+  const content =
+    data?.choices?.[0]?.message?.content;
+
+  if (typeof content === "string") {
+    return content.trim();
+  }
+
+  if (Array.isArray(content)) {
+    return content
+      .map(x =>
+        typeof x === "string"
+          ? x
+          : x?.text || ""
+      )
+      .join("")
+      .trim();
+  }
+
+  return "";
 }
 
 function parseJSON(text) {
-  const raw = stripFence(text);
+  if (!text) return null;
 
   try {
-    return JSON.parse(raw);
+    return JSON.parse(text);
   } catch {}
 
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
+  const fenced = text.match(
+    /```(?:json)?\s*([\s\S]*?)```/i
+  );
 
-  if (start >= 0 && end > start) {
+  if (fenced) {
     try {
-      return JSON.parse(raw.slice(start, end + 1));
+      return JSON.parse(
+        fenced[1].trim()
+      );
     } catch {}
   }
 
-  const arrStart = raw.indexOf("[");
-  const arrEnd = raw.lastIndexOf("]");
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
 
-  if (arrStart >= 0 && arrEnd > arrStart) {
+  if (start !== -1 && end > start) {
     try {
-      return JSON.parse(raw.slice(arrStart, arrEnd + 1));
+      return JSON.parse(
+        text.slice(start, end + 1)
+      );
     } catch {}
   }
 
   return null;
 }
 
-function extractText(data) {
-  const choice = data?.choices?.[0];
+/* =========================================================
+   VAULT NORMALIZATION
+   ========================================================= */
 
-  if (!choice) return "";
+function arr(value) {
+  return Array.isArray(value)
+    ? value
+    : [];
+}
 
-  const content = choice.message?.content;
+function clean(value) {
+  return String(value ?? "")
+    .trim()
+    .replace(/\s+/g, " ");
+}
 
-  if (typeof content === "string") {
-    return content;
-  }
+function normalizeVault(vault = {}) {
+  return {
+    interests: arr(vault.interests)
+      .map(clean)
+      .filter(Boolean),
 
-  if (Array.isArray(content)) {
-    return content
+    hobbies: arr(vault.hobbies)
+      .map(clean)
+      .filter(Boolean),
+
+    likings: arr(vault.likings)
+      .map(clean)
+      .filter(Boolean),
+
+    strongSubjects: arr(
+      vault.strongSubjects ??
+      vault.subjects
+    )
       .map(x => {
-        if (typeof x === "string") return x;
-        return x?.text || "";
-      })
-      .join("");
-  }
+        if (typeof x === "string")
+          return clean(x);
 
-  return "";
-}
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-/*
-  -------------------------------------------------------
-  RATE-LIMIT SAFE AI REQUEST
-  -------------------------------------------------------
-*/
-
-async function requestAI(prompt, options = {}) {
-  const {
-    webSearch = false,
-    maxAttempts = MAX_ATTEMPTS
-  } = options;
-
-  const apiKey = process.env.OPENROUTER_API_KEY;
-
-  if (!apiKey) {
-    const err = new Error("OPENROUTER_API_KEY is missing.");
-    err.code = "MISSING_API_KEY";
-    throw err;
-  }
-
-  let lastError = null;
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const model =
-      FALLBACK_MODELS[Math.min(attempt, FALLBACK_MODELS.length - 1)];
-
-    const controller = new AbortController();
-
-    const timeout = setTimeout(
-      () => controller.abort(),
-      webSearch ? 15000 : 12000
-    );
-
-    try {
-      const systemPrompt = `
-You are the core AI engine of CareerMitra.
-
-Your behaviour must ALWAYS be:
-
-- neutral
-- unbiased
-- evidence-based
-- polite
-- soft-spoken
-- easy to understand
-- student-centred
-- family-sensitive
-- non-judgmental
-- non-directive
-
-IMPORTANT:
-
-Never promote a career because it is popular.
-
-Never promote a career because it has high salary.
-
-Never assume engineering, medicine, government jobs, aviation, software, AI, business, or any other field is better.
-
-Never infer a student's desired career unless the student's supplied data actually supports it.
-
-Never manufacture information that the user did not provide.
-
-When analysing a student, use their actual Personal Vault, Test Zone responses and other supplied information.
-
-When analysing family responses, use the actual family answers.
-
-Do not convert generic statements such as:
-"I support whatever he wants"
-"money is no problem"
-"I don't care"
-"no issue"
-into evidence for a specific career.
-
-If evidence is insufficient, say so.
-
-The purpose of CareerMitra is decision support, NOT forcing a career choice.
-
-Use simple language.
-`;
-
-      const body = {
-        model,
-
-        messages: [
-          {
-            role: "system",
-            content: systemPrompt
-          },
-          {
-            role: "user",
-            content: prompt
-          }
-        ],
-
-        temperature: webSearch ? 0.05 : 0.15,
-
-        max_tokens: webSearch ? 6500 : 6000,
-
-        provider: {
-          allow_fallbacks: true,
-          sort: "throughput"
-        }
-      };
-
-      /*
-        Optional web search mode.
-        The frontend can still send the research prompt with
-        webSearch=true. The backend keeps the same AI interface.
-      */
-
-      if (webSearch) {
-        body.plugins = [
-          {
-            id: "web",
-            max_results: 8
-          }
-        ];
-      }
-
-      const response = await fetch(OPENROUTER_URL, {
-        method: "POST",
-
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`,
-          "HTTP-Referer":
-            process.env.APP_URL ||
-            process.env.VERCEL_URL ||
-            "https://careermitra.vercel.app",
-          "X-Title": "CareerMitra"
-        },
-
-        body: JSON.stringify(body),
-
-        signal: controller.signal
-      });
-
-      clearTimeout(timeout);
-
-      const text = await response.text();
-
-      let data = null;
-
-      try {
-        data = JSON.parse(text);
-      } catch {
-        data = null;
-      }
-
-      if (!response.ok) {
-        const message =
-          data?.error?.message ||
-          text ||
-          `OpenRouter returned ${response.status}`;
-
-        const error = new Error(message);
-
-        error.status = response.status;
-
-        /*
-          Retry only transient failures.
-        */
-
-        const retryable = [
-          408,
-          409,
-          425,
-          429,
-          500,
-          502,
-          503,
-          504
-        ].includes(response.status);
-
-        if (!retryable) {
-          throw error;
-        }
-
-        lastError = error;
-
-        /*
-          Small bounded backoff.
-          Do NOT spam the provider.
-        */
-
-        if (attempt < maxAttempts - 1) {
-          await sleep(350 * (attempt + 1));
-          continue;
-        }
-
-        throw error;
-      }
-
-      const output = extractText(data);
-
-      if (!output) {
-        lastError = new Error("AI returned an empty response.");
-
-        if (attempt < maxAttempts - 1) {
-          await sleep(300 * (attempt + 1));
-          continue;
-        }
-
-        throw lastError;
-      }
-
-      return {
-        text: output,
-        model,
-        attempt: attempt + 1,
-        fallbackUsed: attempt > 0
-      };
-
-    } catch (error) {
-      clearTimeout(timeout);
-
-      lastError = error;
-
-      if (error?.name === "AbortError") {
-        lastError = new Error(
-          "AI request timed out."
+        return clean(
+          x?.name
+            ? `${x.name}${
+                x.level
+                  ? ` (${x.level})`
+                  : ""
+              }`
+            : ""
         );
-      }
+      })
+      .filter(Boolean),
 
-      if (attempt < maxAttempts - 1) {
-        await sleep(300 * (attempt + 1));
-        continue;
-      }
-    }
-  }
+    preferredRoles: arr(
+      vault.preferredRoles ??
+      vault.preferredRolesInPriorityOrder ??
+      vault.roles
+    )
+      .map(x => {
+        if (typeof x === "string")
+          return clean(x);
 
-  throw lastError || new Error("AI request failed.");
+        return clean(
+          x?.name ||
+          x?.role ||
+          x?.title ||
+          ""
+        );
+      })
+      .filter(Boolean),
+
+    nonNegotiableCareer: clean(
+      vault.nonNegotiableCareer ??
+      vault.nonnegotiable ??
+      vault.nonNegotiable ??
+      ""
+    ),
+
+    skills: arr(
+      vault.skills ??
+      vault.verifiedSkills
+    )
+      .map(x => {
+        if (typeof x === "string")
+          return clean(x);
+
+        return clean(
+          x?.name
+            ? `${x.name}${
+                x.level
+                  ? ` (${x.level})`
+                  : ""
+              }`
+            : ""
+        );
+      })
+      .filter(Boolean),
+
+    chosenField: clean(
+      vault.chosenField ??
+      vault.field ??
+      ""
+    ),
+
+    reasonForField: clean(
+      vault.reasonForField ??
+      vault.whyField ??
+      ""
+    ),
+
+    reasonNotOtherFields: clean(
+      vault.reasonNotOtherFields ??
+      vault.whyNotOthers ??
+      ""
+    ),
+
+    alternatives: arr(
+      vault.alternatives ??
+      vault.alternativesConsidered
+    )
+      .map(clean)
+      .filter(Boolean)
+  };
 }
 
+/* =========================================================
+   TEST ZONE PROMPT
+   ========================================================= */
 
-/*
-  -------------------------------------------------------
-  TEST ZONE
-  -------------------------------------------------------
-*/
+function buildTestPrompt({
+  vault,
+  stage = "student",
+  repair = false,
+  previous = null,
+  errors = []
+}) {
+  const V = normalizeVault(vault);
 
-function testZonePrompt(prompt) {
   return `
-You are generating the Student Test Zone for CareerMitra.
+You are the AI question-generation engine for CareerMitra.
 
-The Personal Vault below belongs to ONE specific student.
+Your ONLY job is to generate a personalized career-counselling
+test for ONE specific student.
 
-You MUST use this student's actual information.
+STUDENT LIFE STAGE:
+${stage}
 
 PERSONAL VAULT:
+${JSON.stringify(V, null, 2)}
 
-${prompt}
+==================================================
+CORE REQUIREMENT
+==================================================
 
-YOUR TASK:
+Every question must be generated specifically using the
+student's Personal Vault.
 
-Generate a complete 25-question assessment.
+DO NOT use a generic pre-written question bank.
 
-The questions must be PERSONALIZED from the supplied Vault.
+DO NOT generate the same questions for every student.
 
-Do NOT generate generic questions that could have been given to any student.
+If Student A and Student B have different Vault information,
+their questions MUST be meaningfully different.
 
-Do NOT assume a career.
+The Vault is the source of personalization.
 
-Do NOT favour any career category.
+==================================================
+QUESTION DISTRIBUTION
+==================================================
 
-Do NOT repeatedly ask about the same interest.
+Generate EXACTLY 25 questions:
 
-Do NOT simply ask:
-"Do you like X?"
-again and again.
+1. Interests              = 5
+2. Hobbies / Activities   = 4
+3. Strong Subjects        = 4
+4. Career / Role Choices  = 5
+5. Skills / Strengths     = 4
+6. Work Style / Personality = 3
 
-Instead, understand the student's information and create realistic situations, preferences and choices around it.
+TOTAL = 25
 
-QUESTION DISTRIBUTION:
+==================================================
+PERSONALIZATION RULE
+==================================================
 
-Interests: 5
-Hobbies / Activities: 4
-Strong Subjects: 4
-Career / Role Preferences: 5
-Skills / Strengths: 4
-Work Style / Personality: 3
+For every question, include a "basedOn" field.
 
-TOTAL: exactly 25 questions.
+"basedOn" must identify the actual Personal Vault information
+used to create that question.
 
-IMPORTANT:
+Examples:
 
-The first five categories MUST be grounded in the actual Vault.
+"Interests: robotics"
 
-Each question must contain:
+"Hobbies: chess"
 
-{
-  "id": 1,
-  "category": "Interests",
-  "question": "...",
-  "options": [
-    "...",
-    "...",
-    "...",
-    "..."
-  ],
-  "basedOn": "...",
-  "traitMap": {
-    "R": 0,
-    "I": 0,
-    "A": 0,
-    "S": 0,
-    "E": 0,
-    "C": 0
-  }
-}
+"Strong Subject: Physics"
 
-RULES FOR OPTIONS:
+"Preferred Role: Data Scientist"
 
-- exactly 4 options
-- all options must be plausible
-- all options must be similar in quality
-- no obviously correct answer
-- no obviously bad answer
-- no option should secretly mean "choose the recommended career"
-- avoid emotional manipulation
-- avoid salary-only framing
-- avoid prestige framing
-- avoid socially desirable answers
-- avoid leading wording
+"Skill: Python"
 
-The four options should represent different legitimate preferences.
+"Chosen Field: Computer Science"
 
-For example, do NOT make:
+Never write vague values such as:
 
-A. The smart option
-B. The boring option
-C. The risky option
-D. The useless option
+"General"
 
-Instead make all four reasonable.
+"Student profile"
 
-TRAIT MAP:
+"Career interests"
 
-Use Holland-style RIASEC dimensions.
+"Personal information"
+
+unless the question genuinely cannot be grounded in a Vault
+item.
+
+At least 80% of the 25 questions MUST be directly grounded
+in an actual Vault item.
+
+Use different Vault items across the test.
+
+Do not repeatedly use only the first interest.
+
+==================================================
+NEUTRALITY
+==================================================
+
+This is a CAREER COUNSELLING test.
+
+Do NOT push the student toward:
+
+- engineering
+- medicine
+- coding
+- government jobs
+- business
+- any particular career
+
+Do not make one option sound superior.
+
+There are no "correct" personality answers.
+
+The questions should discover the student's preferences,
+not manipulate them.
+
+==================================================
+LANGUAGE
+==================================================
+
+Use very simple English.
+
+Short questions.
+
+Short options.
+
+Suitable for a Class 8 student.
+
+No unnecessary jargon.
+
+==================================================
+TRAIT SYSTEM
+==================================================
+
+For preference/personality questions use Holland codes:
 
 R = Realistic
 I = Investigative
@@ -432,496 +361,837 @@ S = Social
 E = Enterprising
 C = Conventional
 
-Use small values such as:
+Each personality question should have four different
+trait codes.
 
-0
-1
-2
+There is no correct personality answer.
 
-Do not make every question map heavily to the same trait.
+Do not expose Holland names to the student.
 
-IMPORTANT:
+==================================================
+OUTPUT FORMAT
+==================================================
 
-A question can be based on a student's interest without assuming that interest must become their career.
+Return ONLY valid JSON.
 
-A hobby is evidence of preference, NOT proof of career choice.
-
-A strong subject is evidence of comfort/ability, NOT proof of career choice.
-
-A preferred role is evidence of stated preference, NOT proof of suitability.
-
-Return ONLY JSON.
-
-FORMAT:
+The output MUST be:
 
 {
   "questions": [
     {
       "id": 1,
-      "category": "Interests",
-      "question": "...",
-      "options": ["...", "...", "...", "..."],
-      "basedOn": "...",
-      "traitMap": {
-        "R": 0,
-        "I": 1,
-        "A": 0,
-        "S": 0,
-        "E": 1,
-        "C": 0
+      "cat": "Interests",
+      "basedOn": "Interests: robotics",
+      "q": "If you could spend more time learning about robotics, what would interest you most?",
+      "o": [
+        {
+          "text": "Building and testing machines",
+          "trait": "R"
+        },
+        {
+          "text": "Finding out how the machine works",
+          "trait": "I"
+        },
+        {
+          "text": "Designing how it looks",
+          "trait": "A"
+        },
+        {
+          "text": "Showing others how it works",
+          "trait": "S"
+        }
+      ]
+    }
+  ]
+}
+
+For subject/knowledge questions where there is a genuine
+correct answer, use:
+
+{
+  "text": "...",
+  "correct": true
+}
+
+Do NOT mix "correct" and "trait" in the same option.
+
+==================================================
+HARD RULES
+==================================================
+
+Exactly 25 questions.
+
+Exactly 4 options per question.
+
+No duplicate questions.
+
+No duplicate option inside a question.
+
+Every question must have:
+
+id
+cat
+basedOn
+q
+o
+
+Every question must have meaningful personalization.
+
+No empty questions.
+
+No empty options.
+
+No career-leading language.
+
+No "which career is best" questions.
+
+No questions that directly reveal the scoring system.
+
+${
+  repair
+    ? `
+==================================================
+REPAIR MODE
+==================================================
+
+The previous AI output failed validation.
+
+Previous output:
+${JSON.stringify(previous, null, 2)}
+
+Validation errors:
+${JSON.stringify(errors, null, 2)}
+
+Repair ONLY the problems.
+
+Return a completely valid 25-question JSON object.
+
+Do not fall back to generic questions.
+Do not remove personalization.
+`
+    : ""
+}
+`;
+}
+
+/* =========================================================
+   STRUCTURAL VALIDATION
+   ========================================================= */
+
+const CATEGORY_COUNTS = {
+  Interests: 5,
+  "Hobbies / Activities": 4,
+  "Strong Subjects": 4,
+  "Career / Role Choices": 5,
+  "Skills / Strengths": 4,
+  "Work Style / Personality": 3
+};
+
+function normalizeCategory(cat) {
+  const s = clean(cat).toLowerCase();
+
+  if (s.includes("interest"))
+    return "Interests";
+
+  if (
+    s.includes("hobby") ||
+    s.includes("activity")
+  )
+    return "Hobbies / Activities";
+
+  if (
+    s.includes("subject") ||
+    s.includes("academic")
+  )
+    return "Strong Subjects";
+
+  if (
+    s.includes("career") ||
+    s.includes("role")
+  )
+    return "Career / Role Choices";
+
+  if (
+    s.includes("skill") ||
+    s.includes("strength")
+  )
+    return "Skills / Strengths";
+
+  if (
+    s.includes("work style") ||
+    s.includes("personality")
+  )
+    return "Work Style / Personality";
+
+  return clean(cat);
+}
+
+function validateTest(data, vault) {
+  const errors = [];
+
+  if (
+    !data ||
+    !Array.isArray(data.questions)
+  ) {
+    return {
+      valid: false,
+      errors: ["Missing questions array."]
+    };
+  }
+
+  const questions = data.questions;
+
+  if (questions.length !== 25) {
+    errors.push(
+      `Expected 25 questions, got ${questions.length}.`
+    );
+  }
+
+  const counts = {};
+
+  const normalizedVault =
+    normalizeVault(vault);
+
+  const vaultStrings = [
+    ...normalizedVault.interests,
+    ...normalizedVault.hobbies,
+    ...normalizedVault.likings,
+    ...normalizedVault.strongSubjects,
+    ...normalizedVault.preferredRoles,
+    ...normalizedVault.skills,
+    normalizedVault.nonNegotiableCareer,
+    normalizedVault.chosenField,
+    normalizedVault.reasonForField,
+    normalizedVault.reasonNotOtherFields,
+    ...normalizedVault.alternatives
+  ]
+    .map(x => clean(x).toLowerCase())
+    .filter(Boolean);
+
+  const seenQuestions = new Set();
+
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i];
+
+    if (!q || typeof q !== "object") {
+      errors.push(
+        `Question ${i + 1} is invalid.`
+      );
+      continue;
+    }
+
+    const category =
+      normalizeCategory(q.cat);
+
+    counts[category] =
+      (counts[category] || 0) + 1;
+
+    if (!clean(q.q)) {
+      errors.push(
+        `Question ${i + 1} has no text.`
+      );
+    }
+
+    if (!clean(q.basedOn)) {
+      errors.push(
+        `Question ${i + 1} has no basedOn.`
+      );
+    }
+
+    if (
+      !Array.isArray(q.o) ||
+      q.o.length !== 4
+    ) {
+      errors.push(
+        `Question ${i + 1} must have exactly 4 options.`
+      );
+      continue;
+    }
+
+    const questionKey =
+      clean(q.q).toLowerCase();
+
+    if (seenQuestions.has(questionKey)) {
+      errors.push(
+        `Duplicate question: ${i + 1}.`
+      );
+    }
+
+    seenQuestions.add(questionKey);
+
+    const optionTexts = q.o
+      .map(o =>
+        clean(o?.text).toLowerCase()
+      )
+      .filter(Boolean);
+
+    if (new Set(optionTexts).size !== 4) {
+      errors.push(
+        `Question ${i + 1} has duplicate options.`
+      );
+    }
+
+    const personality =
+      category ===
+      "Work Style / Personality" ||
+      category === "Interests" ||
+      category === "Hobbies / Activities" ||
+      category === "Career / Role Choices" ||
+      category === "Skills / Strengths";
+
+    if (personality) {
+      const traits = q.o.map(
+        o => clean(o?.trait).toUpperCase()
+      );
+
+      const validTraits =
+        traits.every(t =>
+          ["R", "I", "A", "S", "E", "C"]
+            .includes(t)
+        );
+
+      if (validTraits) {
+        if (
+          new Set(traits).size !== 4
+        ) {
+          errors.push(
+            `Question ${i + 1} must use 4 different Holland traits.`
+          );
+        }
       }
     }
-  ]
-}
-`;
-}
 
+    /*
+     * Grounding check.
+     *
+     * We don't require exact wording because AI may paraphrase.
+     * We require meaningful overlap with an actual Vault item.
+     */
+    if (
+      category !== "Work Style / Personality"
+    ) {
+      const grounding =
+        clean(q.basedOn).toLowerCase();
 
-/*
-  -------------------------------------------------------
-  LIVE CAREER RESEARCH
-  -------------------------------------------------------
-*/
+      const grounded =
+        vaultStrings.some(item => {
+          if (
+            grounding.includes(item) ||
+            item.includes(grounding)
+          ) {
+            return true;
+          }
 
-function researchPrompt(prompt) {
-  return `
-You are CareerMitra's live career research analyst.
+          const words = item
+            .split(/[^a-z0-9]+/)
+            .filter(w => w.length >= 4);
 
-Research the EXACT career supplied by the student.
+          if (!words.length)
+            return false;
 
-Do not replace it with a broader career.
+          const hits = words.filter(w =>
+            grounding.includes(w)
+          ).length;
 
-Do not silently change the specialization.
+          return hits >=
+            Math.min(2, words.length);
+        });
 
-Use India-focused information wherever possible.
-
-Prefer:
-
-- NMC
-- NBEMS
-- NBE
-- MCC
-- AIIMS
-- Government of India
-- .gov.in
-- .ac.in
-- major Indian hospitals
-- professional associations
-- reputable Indian employment sources
-
-Avoid foreign salary data when answering Indian students unless clearly marked as international context.
-
-Return balanced information.
-
-Include:
-
-1. What the career involves
-2. Pros
-3. Cons
-4. India pay
-5. Market requirements
-6. Current demand
-7. Future growth
-8. Step-by-step education path
-9. Same-level alternatives
-10. Struggles and barriers
-11. Rewards beyond money
-12. Public discussion themes
-13. Family concerns that the available evidence can actually address
-14. Sources
-
-Never invent salary figures.
-
-Never claim that a career is "best".
-
-Never guarantee employment.
-
-Return ONLY JSON.
-
-Expected format:
-
-{
-  "career": "...",
-  "what_it_involves": "...",
-  "pros": [],
-  "cons": [],
-  "pay_india": "...",
-  "market_requirements": "...",
-  "demand": "...",
-  "future_growth": "...",
-  "step_by_step_path": [],
-  "same_level_alternatives": [],
-  "struggles_barriers": [],
-  "rewards_beyond_money": [],
-  "public_discussion_themes": [],
-  "family_concerns_addressed": [],
-  "sources": []
-}
-
-STUDENT REQUEST:
-
-${prompt}
-`;
-}
-
-
-/*
-  -------------------------------------------------------
-  FAMILY ANALYSIS
-  -------------------------------------------------------
-*/
-
-function familyPrompt(prompt) {
-  return `
-You are CareerMitra's Family Perspective AI analyst.
-
-Analyse the family's actual answers.
-
-Do NOT assume what the family means.
-
-Do NOT convert generic support into career preference.
-
-For example:
-
-"I support whatever he wants"
-
-does NOT mean:
-
-"Family supports software engineering."
-
-Similarly:
-
-"salary is no problem"
-
-does NOT mean:
-
-"Family prefers high-paying careers."
-
-Identify:
-
-- explicit career preferences
-- genuine concerns
-- financial concerns
-- stability concerns
-- education concerns
-- location concerns
-- work-life concerns
-- future concerns
-- competition concerns
-- social concerns
-- general support statements
-- neutral statements
-
-Use the parent's actual wording.
-
-Keep the tone respectful and easy to understand.
-
-Do not judge the parent.
-
-Do not judge the student.
-
-Return JSON only.
-
-STUDENT:
-
-${prompt}
-
-FORMAT:
-
-{
-  "concerns": [
-    {
-      "question": "...",
-      "answer": "...",
-      "type": "explicit_preference|concern|support|neutral",
-      "dimensions": [],
-      "importance": "low|medium|high"
+      if (!grounded) {
+        errors.push(
+          `Question ${i + 1} is not grounded in the student's Vault.`
+        );
+      }
     }
-  ]
-}
-`;
-}
+  }
 
-
-/*
-  -------------------------------------------------------
-  COMMON GROUND
-  -------------------------------------------------------
-*/
-
-function commonGroundPrompt(prompt) {
-  return `
-You are CareerMitra's neutral Common Ground AI.
-
-You are comparing TWO sides:
-
-1. Student evidence
-2. Family evidence
-
-You must NEVER force three careers.
-
-If only one or two careers genuinely fit, return only one or two.
-
-If none fit, return an empty list.
-
-A career is eligible only if:
-
-- there is real student evidence
-AND
-- there is real family evidence or a family concern that the career genuinely addresses.
-
-Generic family support is NOT career evidence.
-
-Examples:
-
-"I support whatever he wants"
-"I trust him"
-"money is no problem"
-"no limit"
-"I don't care about society"
-
-must NOT be used to support any particular career.
-
-Use the student's Test Zone results.
-
-Use the Personal Vault.
-
-Use actual family answers.
-
-Use actual career data.
-
-If there is a conflict, SHOW IT.
-
-Do not hide conflicts simply to make the result look positive.
-
-The student's non-negotiable career must remain separately visible.
-
-It must not automatically win.
-
-Return JSON only.
-
-INPUT:
-
-${prompt}
-
-FORMAT:
-
-{
-  "picks": [
-    {
-      "career": "...",
-      "studentEvidence": [],
-      "familyEvidence": [],
-      "conflicts": [],
-      "fit": "Strong|Moderate",
-      "reason": "..."
+  for (const [category, expected] of
+    Object.entries(CATEGORY_COUNTS)) {
+    if (
+      (counts[category] || 0) !== expected
+    ) {
+      errors.push(
+        `${category}: expected ${expected}, got ${
+          counts[category] || 0
+        }.`
+      );
     }
-  ]
+  }
+
+  /*
+   * We intentionally require real personalization.
+   */
+  const groundedCount =
+    questions.filter(q => {
+      const b =
+        clean(q?.basedOn).toLowerCase();
+
+      return vaultStrings.some(item =>
+        b.includes(item) ||
+        item.includes(b)
+      );
+    }).length;
+
+  if (groundedCount < 20) {
+    errors.push(
+      `Only ${groundedCount}/25 questions are clearly Vault-grounded. At least 20 are required.`
+    );
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    groundedCount,
+    counts
+  };
 }
+
+/* =========================================================
+   OPENROUTER
+   ========================================================= */
+
+async function requestAI(
+  prompt,
+  {
+    maxAttempts = 3
+  } = {}
+) {
+  const apiKey =
+    process.env.OPENROUTER_API_KEY;
+
+  if (!apiKey) {
+    throw new Error(
+      "OPENROUTER_API_KEY is missing."
+    );
+  }
+
+  let lastError = null;
+
+  for (
+    let attempt = 0;
+    attempt < maxAttempts;
+    attempt++
+  ) {
+    const model =
+      MODELS[
+        attempt % MODELS.length
+      ];
+
+    try {
+      const controller =
+        new AbortController();
+
+      const timeout =
+        setTimeout(
+          () => controller.abort(),
+          30000
+        );
+
+      const response =
+        await fetch(
+          OPENROUTER_URL,
+          {
+            method: "POST",
+
+            headers: {
+              Authorization:
+                `Bearer ${apiKey}`,
+
+              "Content-Type":
+                "application/json",
+
+              "HTTP-Referer":
+                "https://careermitra-zeta.vercel.app/",
+
+              "X-Title":
+                "CareerMitra"
+            },
+
+            body: JSON.stringify({
+              model,
+
+              messages: [
+                {
+                  role: "system",
+                  content:
+                    `
+You are CareerMitra's AI engine.
+
+Return ONLY valid JSON when JSON is requested.
+
+Follow the user's supplied Personal Vault exactly.
+
+Never replace missing student information
+with generic assumptions.
+
+Never fabricate Personal Vault data.
+`
+                },
+                {
+                  role: "user",
+                  content: prompt
+                }
+              ],
+
+              temperature: 0.85,
+
+              max_tokens: 12000,
+
+              provider: {
+                allow_fallbacks: true
+              }
+            }),
+
+            signal:
+              controller.signal
+          }
+        );
+
+      clearTimeout(timeout);
+
+      const text =
+        await response.text();
+
+      if (!response.ok) {
+        const err =
+          new Error(
+            `OpenRouter ${response.status}: ${text.slice(
+              0,
+              500
+            )}`
+          );
+
+        err.status =
+          response.status;
+
+        throw err;
+      }
+
+      const json =
+        JSON.parse(text);
+
+      const output =
+        extractText(json);
+
+      if (!output) {
+        throw new Error(
+          "AI returned an empty response."
+        );
+      }
+
+      return {
+        text: output,
+        model,
+        attempt: attempt + 1
+      };
+
+    } catch (err) {
+      lastError = err;
+
+      const status =
+        Number(err?.status);
+
+      const retryable =
+        !status ||
+        RETRYABLE.has(status);
+
+      if (
+        attempt ===
+          maxAttempts - 1 ||
+        !retryable
+      ) {
+        break;
+      }
+
+      await sleep(
+        400 * (attempt + 1)
+      );
+    }
+  }
+
+  throw lastError ||
+    new Error(
+      "AI request failed."
+    );
+}
+
+/* =========================================================
+   TEST GENERATION
+   ========================================================= */
+
+async function generateTest(
+  vault,
+  stage
+) {
+  const prompt =
+    buildTestPrompt({
+      vault,
+      stage
+    });
+
+  let first;
+
+  try {
+    first =
+      await requestAI(prompt, {
+        maxAttempts: 3
+      });
+  } catch (err) {
+    return {
+      ok: false,
+      reason: "AI_REQUEST_FAILED",
+      error: err?.message ||
+        "AI request failed."
+    };
+  }
+
+  const parsed =
+    parseJSON(first.text);
+
+  const validation =
+    validateTest(
+      parsed,
+      vault
+    );
+
+  if (validation.valid) {
+    return {
+      ok: true,
+      data: parsed,
+      aiGenerated: true,
+      repaired: false,
+      model: first.model,
+      attempts: first.attempt,
+      validation
+    };
+  }
+
+  /*
+   * AI output was bad.
+   *
+   * We do NOT use local questions.
+   *
+   * We ask AI to repair its own output.
+   */
+  try {
+    const repairPrompt =
+      buildTestPrompt({
+        vault,
+        stage,
+        repair: true,
+        previous: parsed,
+        errors: validation.errors
+      });
+
+    const repaired =
+      await requestAI(
+        repairPrompt,
+        {
+          maxAttempts: 2
+        }
+      );
+
+    const repairedJSON =
+      parseJSON(
+        repaired.text
+      );
+
+    const repairedValidation =
+      validateTest(
+        repairedJSON,
+        vault
+      );
+
+    if (
+      repairedValidation.valid
+    ) {
+      return {
+        ok: true,
+        data: repairedJSON,
+        aiGenerated: true,
+        repaired: true,
+        model: repaired.model,
+        attempts:
+          first.attempt +
+          repaired.attempt,
+        validation:
+          repairedValidation
+      };
+    }
+
+    return {
+      ok: false,
+      reason:
+        "AI_OUTPUT_FAILED_VALIDATION",
+      error:
+        "AI generated questions but the output did not pass CareerMitra validation.",
+      validation:
+        repairedValidation
+    };
+
+  } catch (err) {
+    return {
+      ok: false,
+      reason:
+        "AI_REPAIR_FAILED",
+      error:
+        err?.message ||
+        "AI repair failed."
+    };
+  }
+}
+
+/* =========================================================
+   OTHER AI REQUESTS
+   ========================================================= */
+
+function genericPrompt(prompt) {
+  return `
+You are CareerMitra, an AI career counselling assistant.
+
+Follow the supplied user data exactly.
+
+Do not invent facts.
+
+Do not make unsupported career recommendations.
+
+If JSON is requested, return ONLY valid JSON.
+
+USER REQUEST:
+${prompt}
 `;
 }
 
+/* =========================================================
+   API HANDLER
+   ========================================================= */
 
-/*
-  -------------------------------------------------------
-  REQUEST CLASSIFICATION
-  -------------------------------------------------------
-*/
-
-function purposeFor(prompt = "") {
-  const p = prompt.toLowerCase();
-
-  if (
-    p.includes("25 questions") ||
-    p.includes("test zone") ||
-    p.includes("personal vault") ||
-    p.includes("traitmap") ||
-    p.includes("generate questions")
-  ) {
-    return "test";
-  }
-
-  if (
-    p.includes("family perspective") ||
-    p.includes("parent") ||
-    p.includes("family concern")
-  ) {
-    return "family";
-  }
-
-  if (
-    p.includes("common ground") ||
-    p.includes("intersection") ||
-    p.includes("student evidence")
-  ) {
-    return "common-ground";
-  }
-
-  if (
-    p.includes("live career research") ||
-    p.includes("current demand") ||
-    p.includes("india pay") ||
-    p.includes("market requirements")
-  ) {
-    return "research";
-  }
-
-  return "general";
-}
-
-
-/*
-  -------------------------------------------------------
-  MAIN HANDLER
-  -------------------------------------------------------
-*/
-
-export default async function handler(req, res) {
+export default async function handler(
+  req,
+  res
+) {
   if (req.method !== "POST") {
     return res.status(405).json({
       ok: false,
-      error: "Method not allowed."
+      error:
+        "Method not allowed."
     });
   }
 
   try {
-    const {
-      prompt = "",
-      webSearch = false
-    } = req.body || {};
+    const body =
+      req.body || {};
 
-    const cleanPrompt = cleanText(prompt);
+    const prompt =
+      typeof body.prompt === "string"
+        ? body.prompt
+        : "";
 
-    if (!cleanPrompt) {
+    if (!prompt.trim()) {
       return res.status(400).json({
         ok: false,
-        error: "Prompt is required."
-      });
-    }
-
-    const purpose = purposeFor(cleanPrompt);
-
-    let finalPrompt = cleanPrompt;
-
-    /*
-      We keep the frontend prompt intact because the frontend
-      already sends the complete Vault context.
-
-      These purpose-specific wrappers strengthen the behaviour
-      without replacing the student's actual data.
-    */
-
-    if (purpose === "test") {
-      finalPrompt = testZonePrompt(cleanPrompt);
-    }
-
-    if (purpose === "family") {
-      finalPrompt = familyPrompt(cleanPrompt);
-    }
-
-    if (purpose === "common-ground") {
-      finalPrompt = commonGroundPrompt(cleanPrompt);
-    }
-
-    if (purpose === "research" || webSearch) {
-      finalPrompt = researchPrompt(cleanPrompt);
-    }
-
-    let result;
-
-    try {
-      result = await requestAI(finalPrompt, {
-        webSearch,
-        maxAttempts: MAX_ATTEMPTS
-      });
-    } catch (error) {
-      console.error("CareerMitra AI failed:", {
-        purpose,
-        message: error?.message,
-        status: error?.status
-      });
-
-      /*
-        IMPORTANT:
-
-        We DO NOT fabricate AI output here.
-
-        The frontend can decide whether to perform its own
-        last-resort fallback.
-      */
-
-      const status =
-        error?.status === 429
-          ? 429
-          : 503;
-
-      return res.status(status).json({
-        ok: false,
         error:
-          error?.message ||
-          "AI service temporarily unavailable.",
-        code:
-          error?.status === 429
-            ? "RATE_LIMIT"
-            : "AI_UNAVAILABLE",
-        fallbackAllowed: true
-      });
-    }
-
-    const parsed = parseJSON(result.text);
-
-    /*
-      AI returned text but not valid JSON.
-      Do not pretend this is a valid structured result.
-    */
-
-    if (!parsed) {
-      return res.status(502).json({
-        ok: false,
-        error: "AI returned an invalid structured response.",
-        code: "INVALID_AI_JSON",
-        fallbackAllowed: true,
-        raw: result.text.slice(0, 4000)
+          "Prompt is required."
       });
     }
 
     /*
-      Successful AI response.
-    */
+     * Frontend sends this flag for Test Zone.
+     */
+    const isTestZone =
+      body.purpose === "test" ||
+      body.testZone === true ||
+      /PERSONAL VAULT[\s\S]{0,10000}25/i.test(
+        prompt
+      );
+
+    if (isTestZone) {
+      const vault =
+        body.vault ||
+        {};
+
+      const stage =
+        body.stage ||
+        "student";
+
+      const result =
+        await generateTest(
+          vault,
+          stage
+        );
+
+      if (!result.ok) {
+        return res.status(503).json({
+          ok: false,
+          aiGenerated: false,
+          fallbackAllowed: false,
+          testZone: true,
+          reason:
+            result.reason,
+          error:
+            result.error,
+          validation:
+            result.validation ||
+            null
+        });
+      }
+
+      return res.status(200).json({
+        ok: true,
+        aiGenerated: true,
+        fallbackAllowed: false,
+        testZone: true,
+        repaired:
+          result.repaired,
+        model:
+          result.model,
+        attempts:
+          result.attempts,
+        validation:
+          result.validation,
+        data:
+          result.data
+      });
+    }
+
+    /*
+     * Normal CareerMitra AI request.
+     */
+    const result =
+      await requestAI(
+        genericPrompt(prompt),
+        {
+          maxAttempts: 3
+        }
+      );
+
+    const parsed =
+      parseJSON(result.text);
 
     return res.status(200).json({
       ok: true,
-      data: parsed,
-
-      /*
-        Useful to the frontend for the green/orange indicator.
-      */
-
       aiGenerated: true,
-
-      model: result.model,
-
-      /*
-        This does NOT mean built-in fallback.
-        It only means the first provider/model attempt
-        failed and another AI model/provider succeeded.
-      */
-
-      providerRetryUsed: Boolean(result.fallbackUsed),
-
-      attempts: result.attempt,
-
-      purpose
+      model:
+        result.model,
+      attempts:
+        result.attempt,
+      data:
+        parsed || result.text
     });
 
-  } catch (error) {
-    console.error("CareerMitra /api/ai fatal error:", error);
+  } catch (err) {
+    console.error(
+      "CareerMitra AI error:",
+      err
+    );
 
     return res.status(500).json({
       ok: false,
-      error: "Unexpected AI service error.",
-      code: "SERVER_ERROR",
-      fallbackAllowed: true
+      aiGenerated: false,
+      fallbackAllowed: false,
+      error:
+        err?.message ||
+        "AI service failed."
     });
   }
 }
