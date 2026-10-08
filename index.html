@@ -845,20 +845,12 @@ async function makeQuestions(s){
 /* ================= analysis ================= */
 function aiCareerRecord(cand,i,st){
   const name=String(cand&&cand.name||cand&&cand.career||'').trim();
-  const base=careerRecord(name);
+  const profile=(cand&&cand.profile&&typeof cand.profile==='object')?cand.profile:{};
   const fit=String(cand&&cand.fit||'Possible');
   const role={
-    ...(base||{}),
     n:name||'Career direction',
-    c:base&&base.c?base.c:'',
-    kw:base&&base.kw?base.kw:[],
-    pros:base&&base.pros?base.pros:[],
-    cons:base&&base.cons?base.cons:[],
-    alt:base&&base.alt?base.alt:[],
-    mkt:base&&base.mkt?base.mkt:'Structured market information is not available for this exact role yet. Use Live Career Research before making a decision.',
     rank:i,
     score:typeof cand?.score==='number'?cand.score:(fit.toLowerCase()==='strong'?0.9:fit.toLowerCase()==='moderate'?0.7:0.5),
-    ph:0,oh:0,
     vaultMatch:!!(st.vault&&[st.vault.nonnegotiable,...roleNames(st.vault),st.vault.field].filter(Boolean).some(x=>String(x).trim().toLowerCase()===name.toLowerCase())),
     strong:arr(cand&&cand.evidence).map(String),
     watch:arr(cand&&cand.watchouts).map(String),
@@ -866,10 +858,34 @@ function aiCareerRecord(cand,i,st){
     aiFit:fit,
     aiTradeoffs:arr(cand&&cand.tradeoffs).map(String),
     aiPath:arr(cand&&cand.path).map(String),
-    aiAlternatives:arr(cand&&cand.alternatives).map(String)
+    aiAlternatives:arr(cand&&cand.alternatives).map(String),
+    // EVERYTHING below is supplied by the AI career-profile analysis.
+    pros:arr(profile.pros).map(String),
+    cons:arr(profile.cons).map(String),
+    mkt:String(profile.market||''),
+    demand:String(profile.demand||''),
+    future:String(profile.future||''),
+    pay:String(profile.pay||''),
+    education:String(profile.education||''),
+    vocational:String(profile.vocational||''),
+    courses:arr(profile.courses).map(String),
+    path:arr(profile.path).map(String),
+    skills:arr(profile.skills).map(String),
+    alt:arr(profile.alternatives).map(String),
+    profileSummary:String(profile.summary||''),
+    profileCaution:String(profile.caution||'')
   };
-  if(!role.pros.length&&role.aiTradeoffs.length)role.cons=role.aiTradeoffs;
-  if(!role.alt.length&&role.aiAlternatives.length)role.alt=role.aiAlternatives;
+  if(!role.pros.length)role.pros=['AI profile did not provide enough evidence for a reliable pro/con claim.'];
+  if(!role.cons.length)role.cons=['AI profile did not provide enough evidence for a reliable pro/con claim.'];
+  if(!role.mkt)role.mkt='Market information was not confidently established by the AI analysis.';
+  if(!role.demand)role.demand='Demand could not be established confidently from the student evidence alone.';
+  if(!role.future)role.future='Future outlook was not established confidently by the AI analysis.';
+  if(!role.education)role.education='Education pathway needs career-specific verification before the student makes a decision.';
+  if(!role.vocational)role.vocational='No reliable vocational route was established by the AI analysis.';
+  if(!role.courses.length)role.courses=['Choose only courses that directly support the verified pathway for this role.'];
+  if(!role.path.length)role.path=['Verify the required qualification or training, build the core skills, gain practical experience, and then apply through the appropriate entry route.'];
+  if(!role.skills.length)role.skills=['Build the core technical and professional skills required by the verified role.'];
+  if(!role.alt.length)role.alt=role.aiAlternatives;
   return role;
 }
 function analyse(st){
@@ -886,14 +902,11 @@ function analyse(st){
   let roles=[];
   if(aiList.length){
     roles=aiList.map((x,i)=>aiCareerRecord(x,i,st));
-  }else{
-    // Last-resort deterministic interpretation only when the AI analysis was genuinely unavailable.
-    const pref=(roleNames(v).join(' ')+' '+(v.nonnegotiable||'')+' '+(v.field||'')).toLowerCase();
-    const other=[...arr(v.interests),...arr(v.hobbies),...arr(v.likings),...subjNames(v),...skillNames(v)].join(' ').toLowerCase();
-    const scored=CAREERS.map(c=>{let score=0;c.c.split('').forEach((k,i)=>score+=share[k]*[3,2,1][i]);const ph=c.kw.filter(k=>rx(k).test(pref)).length,oh=c.kw.filter(k=>rx(k).test(other)).length;return{c,score:score+Math.min(3,ph*2+oh)*.25,ph,oh}}).sort((a,b)=>b.score-a.score);
-    roles=scored.slice(0,7).map((p,i)=>{const strong=[],watch=[];p.c.c.split('').forEach(k=>{if(share[k]>=.22)strong.push(`Your answers show some preference for ${TR[k].n.toLowerCase()} activities.`);else if(share[k]<=.1)watch.push(`You showed less preference for ${TR[k].n.toLowerCase()} activities.`)});if(p.ph>0)strong.push('This role was explicitly present in your Personal Vault.');return{...p.c,rank:i,strong,watch,ph:p.ph,oh:p.oh,vaultMatch:p.ph>0,aiFit:'Fallback'}});
   }
-  const unmatched=roleNames(v).filter(r=>!roles.some(c=>c.n.toLowerCase()===r.toLowerCase())&&!CAREERS.some(c=>c.kw.some(k=>rx(k).test(r.toLowerCase()))||c.n.toLowerCase().includes(r.toLowerCase())));
+  // No deterministic career guessing here. If the AI analysis fails, we do NOT
+  // manufacture job matches from the old static career database. This is deliberate:
+  // the Scorecard must never present a false student-specific analysis as AI truth.
+  const unmatched=[];
   const [a,b]=order;
   const type=`${TR[a].who}–${TR[b].who} (${a}${b})`;
   const defaultTraits=[...TR[a].t,...TR[b].t.slice(0,3),...TR[order[2]].t.slice(0,1)];
@@ -1279,21 +1292,17 @@ function careerRecord(name){
   return CAREERS.find(c=>c.n.toLowerCase()===q)||CAREERS.find(c=>c.kw.some(k=>q.includes(k)||k.includes(q)))||null;
 }
 function learningPath(r){
-  const n=(r&&r.n||'').toLowerCase();
-  if(/software/.test(n))return{academic:'B.Tech/B.E. CSE/IT or BCA → MCA',vocational:'Diploma in Computer Engineering / IT',cert:['Cloud fundamentals','Git/GitHub','Web or backend certification'],skills:['DSA','C++/Python/Java','SQL','Git','APIs','System design basics']};
-  if(/data scientist|ml/.test(n))return{academic:'B.Tech/B.E. CSE/IT/AI/Data Science or B.Sc Statistics/Math → PG where useful',vocational:'Diploma in Data Analytics / AI-ML',cert:['Python for Data Science','SQL','Machine Learning','Cloud ML basics'],skills:['Python','NumPy/Pandas','Statistics','ML','SQL','Model deployment']};
-  if(/cybersecurity/.test(n))return{academic:'B.Tech/B.E. CSE/IT/Cybersecurity or BCA → MCA/M.Tech where useful',vocational:'Diploma in Cybersecurity / Networking',cert:['Networking fundamentals','Security fundamentals','Ethical hacking'],skills:['Linux','Networking','Python','Web security','SIEM basics','Incident response']};
-  if(/defence|space/.test(n))return{academic:'B.Tech/B.E. Aerospace/Mechanical/ECE/CSE/Physics/Maths as relevant → M.Tech/M.Sc for research roles',vocational:'Diploma/Polytechnic in relevant engineering stream',cert:['GATE/recruitment exam preparation','CAD or simulation tools'],skills:['Mathematics','Physics','Programming where relevant','Simulation','Technical writing']};
-  if(/embedded|robotics/.test(n))return{academic:'B.Tech/B.E. ECE/EEE/Mechatronics/Robotics/CSE',vocational:'Diploma in Electronics / Embedded Systems / Mechatronics',cert:['Embedded C','Arduino/STM32','IoT fundamentals'],skills:['C/C++','Microcontrollers','Electronics','Sensors','RTOS basics','Debugging']};
-  if(/product manager/.test(n))return{academic:'Any strong UG degree + product/business exposure; MBA optional depending on path',vocational:'Product / business operations diploma or apprenticeship',cert:['Product management fundamentals','Analytics','Agile/Scrum'],skills:['Product thinking','SQL/analytics','Communication','Roadmapping','User research']};
-  if(/ux|ui/.test(n))return{academic:'B.Des/BFA/HCI/Design or any degree with strong portfolio',vocational:'Diploma in UI/UX / Graphic Design',cert:['Figma','UX research','Design systems'],skills:['Figma','Wireframing','Prototyping','User research','Visual design','Portfolio building']};
-  if(/teacher|professor/.test(n))return{academic:'Relevant bachelor’s → B.Ed for school teaching; Master’s + NET/PhD route for higher education',vocational:'Teacher training / education diploma where applicable',cert:['Teaching methodology','Digital classroom tools'],skills:['Subject mastery','Communication','Lesson planning','Assessment']};
-  if(/doctor|healthcare/.test(n))return{academic:'Relevant healthcare degree; for doctor route MBBS → specialisation as applicable',vocational:'Recognised allied-health diploma/paramedical route where applicable',cert:['First aid/BLS and field-specific certifications'],skills:['Subject knowledge','Clinical skills as applicable','Communication','Documentation']};
-  if(/civil services/.test(n))return{academic:'Any recognised bachelor’s degree; subject-specific higher study optional',vocational:'Public administration / government exam skill programmes',cert:['UPSC/state PSC preparation','Writing/interview preparation'],skills:['General studies','Reasoning','Writing','Current affairs','Communication']};
-  if(/chartered accountant|finance/.test(n))return{academic:'B.Com/BBA/Finance or related degree + CA/finance pathway',vocational:'Accounting/taxation diploma',cert:['Excel','Financial modelling','Tally/ERP'],skills:['Accounting','Excel','Financial analysis','Tax basics','Communication']};
-  if(/lawyer/.test(n))return{academic:'LL.B/5-year integrated law degree; specialisation as desired',vocational:'Legal assistant/paralegal diploma',cert:['Legal research','Contract drafting'],skills:['Legal research','Writing','Argumentation','Communication','Case analysis']};
-  if(/marketing|business manager/.test(n))return{academic:'BBA/B.Com/any relevant UG; MBA optional',vocational:'Sales/marketing diploma',cert:['Digital marketing','Analytics','CRM'],skills:['Communication','Sales','Marketing analytics','Negotiation','Presentation']};
-  return{academic:'Relevant bachelor’s degree; higher study if the role requires it',vocational:'Relevant diploma / polytechnic / ITI route where applicable',cert:['Role-specific fundamentals certification'],skills:['Core subject knowledge','Communication','Problem solving','Portfolio/project work']};
+  const ai=r||{};
+  return {
+    academic:ai.education||'Education pathway not confidently established by AI.',
+    vocational:ai.vocational||'No reliable vocational route established by AI.',
+    cert:arr(ai.courses).length?arr(ai.courses):['No specific course/certification recommendation established by AI.'],
+    skills:arr(ai.skills).length?arr(ai.skills):['Core role skills need to be verified before selection.'],
+    path:arr(ai.path),
+    market:ai.mkt||'Market information not confidently established by AI.',
+    demand:ai.demand||'Demand not confidently established by AI.',
+    future:ai.future||'Future outlook not confidently established by AI.'
+  };
 }
 function anchorCareerBlock(st,an){
   const name=st.vault&&st.vault.nonnegotiable;if(!name)return '';
@@ -1412,11 +1421,14 @@ function scoreBlock(st){
    <h3>Core interests</h3>${interests.map(x=>`<span class="chip">${esc(x)}</span>`).join('')}
    <h3>Your traits</h3>${traits.map(x=>`<span class="chip">${esc(x)}</span>`).join('')}</div>
    <div class="card"><h3 style="margin-top:0">Personality profile spread</h3>${LET.map(k=>`<div class="trait"><span>${TR[k].who} · ${TR[k].n}</span><div class="bar"><i style="width:${Math.round(an.share[k]*100)}%"></i></div><span>${Math.round(an.share[k]*100)}%</span></div>`).join('')}<p class="muted small">Shows how your answers spread across six interest styles. It is a profile, not a score.</p></div>
-   <div class="card"><h2>Education & learning pathways</h2><p class="muted">For each analysed role, this section now keeps the complete career picture together: fit, pros, cons, market/demand/pay, academic route, vocational alternatives, certifications, job-ready skills and alternatives.</p>${paths.map(({r,p})=>`<details class="role" ${r.rank===0?'open':''}><summary><span>${esc(r.n)}</span><span class="fit ${r.rank<2?'s':r.rank<4?'g':'p'}">${r.rank<2?'Strong fit':r.rank<4?'Good fit':'Possible fit'}</span></summary><div class="in">
+   <div class="card"><h2>Education & learning pathways</h2><p class="muted">For each AI-analysed role, this section gives a career-specific job profile: why it fits you, pros, cons, market, demand, pay, future, education, courses, step-by-step path, skills and alternatives.</p>${paths.map(({r,p})=>`<details class="role" ${r.rank===0?'open':''}><summary><span>${esc(r.n)}</span><span class="fit ${r.rank<2?'s':r.rank<4?'g':'p'}">${r.rank<2?'Strong fit':r.rank<4?'Good fit':'Possible fit'}</span></summary><div class="in">
     ${r.strong.length||r.watch.length?`<div class="note info"><b>Why this role appears in your analysis</b><ul style="margin:4px 0 0;padding-left:18px">${r.strong.map(x=>`<li>${esc(x)}</li>`).join('')}${r.watch.map(x=>`<li>⚠ ${esc(x)}</li>`).join('')}</ul></div>`:''}
     <div class="pc"><div class="pros"><h4>Pros</h4><ul>${r.pros.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div><div class="cons"><h4>Cons / trade-offs</h4><ul>${r.cons.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div></div>
-    <h3>Market, demand & pay</h3><p>${esc(r.mkt)}</p><p class="muted small" style="margin-top:-6px">Indicative information in India; actual pay and opportunities vary by employer, city, skills and experience.</p>
-    <h3>Education & pathway to enter this role</h3><p><b>🎓 Academic:</b> ${esc(p.academic)}</p><p><b>🛠️ Vocational / Diploma:</b> ${esc(p.vocational)}</p><p><b>📜 Useful certifications:</b> ${p.cert.map(esc).join(', ')}</p><p><b>💻 Job-ready skills:</b> ${p.skills.map(esc).join(', ')}</p>
+    ${r.profileSummary?`<h3>AI job profile</h3><p>${esc(r.profileSummary)}</p>`:''}
+    <h3>Market & demand</h3><p>${esc(r.mkt)}</p><p>${esc(r.demand)}</p>${r.pay?`<p><b>Pay:</b> ${esc(r.pay)}</p>`:''}<p class="muted small">Dynamic market, demand and pay claims should be live-verified before a final career decision.</p>
+    <h3>Future</h3><p>${esc(r.future)}</p>
+    <h3>Education & learning pathway</h3><p><b>🎓 Academic:</b> ${esc(r.education)}</p><p><b>🛠️ Vocational / Diploma:</b> ${esc(r.vocational)}</p><p><b>📚 Courses / certifications:</b> ${r.courses.map(esc).join(', ')}</p><p><b>🛣️ Step-by-step path:</b></p><ol style="margin-top:4px">${r.path.map(x=>`<li>${esc(x)}</li>`).join('')}</ol><p><b>💻 Job-ready skills:</b> ${r.skills.map(esc).join(', ')}</p>
+    ${r.profileCaution?`<div class="note warn"><b>Verification:</b> ${esc(r.profileCaution)}</div>`:''}
     <h3>Alternatives</h3>${r.alt.map(x=>`<span class="chip alt">${esc(x)}</span>`).join('')}
    </div></details>`).join('')}</div>`};
 }
@@ -1425,8 +1437,10 @@ function rolesBlock(an,withPersonal){
   return an.roles.map((r,i)=>{const[l,t]=lab(r);return`<details class="role" ${i===0?'open':''}><summary><span>${esc(r.n)}${r.vaultMatch?' <span class="chip">your choice</span>':''}</span><span class="fit ${l}">${t}</span></summary><div class="in">
    ${withPersonal&&(r.strong.length||r.watch.length)?`<div class="note info"><b>From your Test Zone activity</b><ul style="margin:4px 0 0;padding-left:18px">${r.strong.map(x=>`<li>${esc(x)}</li>`).join('')}${r.watch.map(x=>`<li>⚠ ${esc(x)}</li>`).join('')}</ul></div>`:''}
    <div class="pc"><div class="pros"><h4>Pros</h4><ul>${r.pros.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div><div class="cons"><h4>Cons</h4><ul>${r.cons.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div></div>
-   <h3>Market value</h3><p>${esc(r.mkt)}</p><p class="muted small" style="margin-top:-6px">Indicative ranges in India; they vary by employer, city and skills.</p>
-   <h3>Education & pathway to enter this role</h3><p><b>🎓 Academic:</b> ${esc(learningPath(r).academic)}</p><p><b>🛠️ Vocational / Diploma:</b> ${esc(learningPath(r).vocational)}</p><p><b>📜 Useful certifications:</b> ${learningPath(r).cert.map(esc).join(', ')}</p><p><b>💻 Job-ready skills:</b> ${learningPath(r).skills.map(esc).join(', ')}</p>
+   ${r.profileSummary?`<h3>AI job profile</h3><p>${esc(r.profileSummary)}</p>`:''}
+   <h3>Market & demand</h3><p>${esc(r.mkt)}</p><p>${esc(r.demand)}</p>${r.pay?`<p><b>Pay:</b> ${esc(r.pay)}</p>`:''}<p class="muted small">Dynamic market, demand and pay claims should be live-verified before a final career decision.</p>
+   <h3>Future</h3><p>${esc(r.future)}</p>
+   <h3>Education & learning pathway</h3><p><b>🎓 Academic:</b> ${esc(r.education)}</p><p><b>🛠️ Vocational / Diploma:</b> ${esc(r.vocational)}</p><p><b>📚 Courses / certifications:</b> ${r.courses.map(esc).join(', ')}</p><p><b>🛣️ Step-by-step path:</b></p><ol style="margin-top:4px">${r.path.map(x=>`<li>${esc(x)}</li>`).join('')}</ol><p><b>💻 Job-ready skills:</b> ${r.skills.map(esc).join(', ')}</p>${r.profileCaution?`<div class="note warn"><b>Verification:</b> ${esc(r.profileCaution)}</div>`:''}
    <h3>Alternatives</h3>${r.alt.map(x=>`<span class="chip alt">${esc(x)}</span>`).join('')}</div></details>`}).join('')
    +(an.unmatched.length?`<p class="muted small">Not in our role database yet: ${an.unmatched.map(esc).join(', ')}.</p>`:'');
 }
@@ -1438,7 +1452,7 @@ function sScore(){
 function sOptions(){
   const s=stu(),{an}=scoreBlock(s);
   const fin=s.progress.options;
-  return`<div class="card"><h2>Options Analyser</h2><p class="muted">Roles ranked from your Test Zone activity and Personal Vault, with pros, cons and what your own answers suggest.</p></div>`+rolesBlock(an,true)+
+  return`<div class="card"><h2>Options Analyser</h2><p class="muted">AI-ranked job profiles built from your Test Zone responses and Personal Vault. Each role includes its own pros, cons, market, demand, future, education, courses and entry path.</p></div>`+rolesBlock(an,true)+
    (fin?'':nextBar('Finish your journey','Mark this step complete to unlock the family connection summary and the final scorecard.','markdone','Finish & see family connection →','data-p="options"'));
 }
 
@@ -1913,11 +1927,20 @@ ANALYSIS TASK
 3. Give a few neutral traits that describe observed behaviour, not labels of worth.
 4. Give up to 5 career directions. Rank them only by how well the student’s own evidence fits. Do NOT fill all 5 if evidence is weak.
 5. For every career direction give: exact name, fit Strong/Moderate/Possible, 2–5 evidence points tied to the student’s actual responses, possible watchouts or missing evidence, and a short reason.
-6. Include careerDirections such as broad work styles only when supported by the evidence.
-7. If the student’s answers are genuinely mixed, say “mixed evidence” rather than forcing a clean personality story.
+6. For EVERY ranked career, also create a complete job profile inside the profile object. The profile must be specific to that exact career, not a generic template.
+7. The profile MUST contain: summary, pros, cons, market, demand, pay, future, education, vocational, courses, path, skills, alternatives and caution.
+8. Pros/cons/demand/market/future must be career-specific. Do not copy the same text across careers.
+9. Education and path must match the exact role. Never say a generic “relevant bachelor’s degree” when the role has a known specific route. If the route is uncertain, explicitly say that it needs verification instead of guessing.
+10. Courses means useful learning subjects/courses/certifications, not random certificate collecting. Give only options that genuinely support the role.
+11. Market, demand, pay and future are dynamic. Do NOT invent precise salary figures, job counts, percentages, employer names or guaranteed outcomes. If current evidence is unavailable, say “needs live verification” in the profile caution.
+12. Zero false personalization: every reason for why the student fits must trace to their Vault or actual test responses. Never invent a project, skill, mark, qualification, interest or experience.
+13. A career must not appear only because it is prestigious, popular, high-paying or present in the static app database.
+14. Return fewer careers if the evidence is weak. Do not fill the list.
+15. Include careerDirections such as broad work styles only when supported by the evidence.
+16. If the student’s answers are genuinely mixed, say “mixed evidence” rather than forcing a clean personality story.
 
 RETURN ONLY JSON:
-{"summary":"2-4 simple sentences","personalityType":"short neutral description","coreInterests":["..."],"traits":["..."],"careerDirections":["..."],"rankedCareers":[{"name":"career direction","fit":"Strong|Moderate|Possible","score":0.0,"evidence":["..."],"watchouts":["..."],"tradeoffs":["..."],"reason":"...","path":["..."],"alternatives":["..."]}],"careerInclination":"1-2 gentle sentences"}`;
+{"summary":"2-4 simple sentences","personalityType":"short neutral description","coreInterests":["..."],"traits":["..."],"careerDirections":["..."],"rankedCareers":[{"name":"career direction","fit":"Strong|Moderate|Possible","score":0.0,"evidence":["..."],"watchouts":["..."],"tradeoffs":["..."],"reason":"...","path":["..."],"alternatives":["..."],"profile":{"summary":"exact-role summary","pros":["..."],"cons":["..."],"market":"...","demand":"...","pay":"...","future":"...","education":"exact education route","vocational":"exact vocational/diploma route or clearly unavailable","courses":["..."],"path":["step 1...","step 2...","step 3..."],"skills":["..."],"alternatives":["..."],"caution":"what still needs verification"}}],"careerInclination":"1-2 gentle sentences"}`;
 
   let r=await aiJson(analysisPrompt);
   let usedAI=!!(r&&typeof r.summary==='string'&&Array.isArray(r.rankedCareers)&&Array.isArray(r.traits)&&Array.isArray(r.coreInterests));
@@ -1932,7 +1955,7 @@ RETURN ONLY JSON:
   const aiPayload={
     summary:String(r.summary||''),coreInterests:arr(r.coreInterests).slice(0,6).map(String),traits:arr(r.traits).slice(0,8).map(String),
     careerInclination:String(r.careerInclination||''),personalityType:String(r.personalityType||''),
-    careerDirections:arr(r.careerDirections).slice(0,6).map(String),rankedCareers:arr(r.rankedCareers).slice(0,8).map(x=>({name:String(x&&x.name||''),fit:String(x&&x.fit||'Possible'),score:typeof x?.score==='number'?x.score:null,evidence:arr(x&&x.evidence).slice(0,5).map(String),watchouts:arr(x&&x.watchouts).slice(0,5).map(String),tradeoffs:arr(x&&x.tradeoffs).slice(0,5).map(String),reason:String(x&&x.reason||''),path:arr(x&&x.path).slice(0,6).map(String),alternatives:arr(x&&x.alternatives).slice(0,6).map(String)})).filter(x=>x.name)
+    careerDirections:arr(r.careerDirections).slice(0,6).map(String),rankedCareers:arr(r.rankedCareers).slice(0,8).map(x=>{const p=(x&&x.profile&&typeof x.profile==='object')?x.profile:{};return{name:String(x&&x.name||''),fit:String(x&&x.fit||'Possible'),score:typeof x?.score==='number'?x.score:null,evidence:arr(x&&x.evidence).slice(0,5).map(String),watchouts:arr(x&&x.watchouts).slice(0,5).map(String),tradeoffs:arr(x&&x.tradeoffs).slice(0,5).map(String),reason:String(x&&x.reason||''),path:arr(x&&x.path).slice(0,6).map(String),alternatives:arr(x&&x.alternatives).slice(0,6).map(String),profile:{summary:String(p.summary||''),pros:arr(p.pros).slice(0,5).map(String),cons:arr(p.cons).slice(0,5).map(String),market:String(p.market||''),demand:String(p.demand||''),pay:String(p.pay||''),future:String(p.future||''),education:String(p.education||''),vocational:String(p.vocational||''),courses:arr(p.courses).slice(0,8).map(String),path:arr(p.path).slice(0,8).map(String),skills:arr(p.skills).slice(0,10).map(String),alternatives:arr(p.alternatives).slice(0,8).map(String),caution:String(p.caution||'')}}}).filter(x=>x.name)
   };
   s.test={tally,reasoning,takenAt:Date.now(),aiSource:usedAI?'ai':'builtin',rev:v.rev,ai:aiPayload,responses};
   s.progress.score=false;s.progress.options=false;delete s.testDraft;
