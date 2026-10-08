@@ -557,129 +557,139 @@ function localPool(v){
 function localCat(v,cat,n){return localPool(v)[cat].slice(0,n).map(q=>({cat,basedOn:q.b,q:q.q,o:shuf(q.o)}))}
 function localQuestions(v){return TQ_PLAN.flatMap(([c,n])=>localCat(v,c,n))}
 function validQuestions(r,count){
-  if(!r||!Array.isArray(r.questions)||r.questions.length<count)return null;
-  r.questions=r.questions.slice(0,count);
-  for(const q of r.questions){
-    if(!q||typeof q.q!=='string'||!Array.isArray(q.o)||q.o.length!==4)return null;
-    let c=0;
-    for(const o of q.o){
-      if(!o||typeof o.text!=='string')return null;
-      if(o.correct===true)c++;else if(o.correct===undefined&&!LET.includes(o.trait))return null;
+  if(!r||!Array.isArray(r.questions)||r.questions.length!==count)return null;
+  const out=[];
+  for(const q0 of r.questions){
+    if(!q0||typeof q0.q!=='string'||!q0.q.trim()||!Array.isArray(q0.o)||q0.o.length!==4)return null;
+    const texts=q0.o.map(o=>String(o&&o.text||'').trim());
+    if(texts.some(t=>t.length<1)||new Set(texts.map(t=>t.toLowerCase())).size!==4)return null;
+    const factual=q0.o.some(o=>o&&o.correct!==undefined);
+    if(factual){
+      const correct=q0.o.filter(o=>o&&o.correct===true).length;
+      if(correct!==1||q0.o.some(o=>o&&o.trait!==undefined))return null;
+    }else{
+      const traits=q0.o.map(o=>o&&o.trait);
+      if(traits.some(t=>!LET.includes(t))||new Set(traits).size!==4)return null;
     }
-    if(c>1||(q.o.some(o=>o.correct!==undefined)&&c!==1))return null;
+    out.push({
+      cat:String(q0.cat||'General'),
+      basedOn:typeof q0.basedOn==='string'?q0.basedOn:'',
+      q:q0.q.trim(),
+      o:q0.o.map(o=>o.correct!==undefined?{text:String(o.text).trim(),correct:o.correct===true}:{text:String(o.text).trim(),trait:o.trait})
+    });
   }
-  return r.questions.map(q=>({cat:q.cat||'General',basedOn:typeof q.basedOn==='string'?q.basedOn:'',q:q.q,o:q.o.map(o=>o.correct!==undefined?{text:o.text,correct:o.correct===true}:{text:o.text,trait:o.trait})}));
+  return out;
 }
-function usesVault(qs,v){
-  const toks=[...arr(v.interests),...arr(v.hobbies),...arr(v.likings),...subjNames(v),...roleNames(v),...skillNames(v),...arr(v.alternatives),v.field,...String(v.field||'').split(/\s+/).filter(w=>w.length>=4)]
-    .map(x=>String(x||'').toLowerCase().trim()).filter(x=>x.length>=3);
-  return qs.filter(q=>{const t=(q.q+' '+q.o.map(o=>o.text).join(' ')).toLowerCase();return toks.some(k=>t.includes(k))}).length;
+function questionQualityIssues(qs,v){
+  const issues=[];
+  const moral=/\b(best|better|worse|good person|bad person|successful person|smart person|lazy|responsible person|irresponsible|should choose|must choose)\b/i;
+  const leading=/\b(obviously|clearly|of course|definitely|only sensible|safe choice|dream career)\b/i;
+  qs.forEach((q,i)=>{
+    const opts=q.o.map(o=>o.text.trim());
+    if(q.q.length>220||opts.some(x=>x.length>120))issues.push(`Q${i+1}: too long`);
+    if(q.cat!=='Basic intelligence'&&q.cat!=='Strong subject / skills'&&opts.some(x=>moral.test(x)||leading.test(x)))issues.push(`Q${i+1}: leading/value-loaded option`);
+    const namedRoles=[...roleNames(v),v.nonnegotiable,v.field,...arr(v.alternatives)].filter(Boolean).map(x=>String(x).trim().toLowerCase()).filter(x=>x.length>=4);
+    if(q.cat!=='Basic intelligence'&&q.cat!=='Strong subject / skills'&&namedRoles.some(name=>opts.some(x=>x.toLowerCase().includes(name))))issues.push(`Q${i+1}: option directly names a personal career/field`);
+    if(q.cat!=='Basic intelligence'&&q.cat!=='Strong subject / skills'&&new Set(opts.map(x=>x.toLowerCase().replace(/[^a-z0-9 ]/gi,''))).size<4)issues.push(`Q${i+1}: duplicate options`);
+  });
+  const cats={};qs.forEach(q=>(cats[q.cat]??=[]).push(q));
+  for(const [cat,n] of TQ_PLAN){if((cats[cat]||[]).length!==n)issues.push(`${cat}: expected ${n}, got ${(cats[cat]||[]).length}`)}
+  return issues;
 }
 const CAT_RULES={
- 'Personality':'Personality questions about how the student behaves and feels in daily life. Where natural, build a few around their likings and hobbies; the rest are general (free time, friends, how they start work, what makes them proud). Do NOT mention any job or career name. Every option has a trait.',
- 'Situation reaction':'Simple everyday situations (school, friends, family, group work, deadlines, mistakes, helping someone) and what the student would do. Do NOT mention any job, career, field or role name. Every option has a trait.',
- 'Interests & likings':'Questions that name their specific interests, hobbies and likings from the vault (a weekend task, how they like to learn it, what they would do with a free month on it, what they would like to do more with it). Every option has a trait.',
- 'Basic intelligence':'Very easy logic and aptitude questions of VARIED types (number series, simple arithmetic, odd-one-out, ordering, easy word reasoning). No vault item needed; set basedOn to "General reasoning". No trait; exactly one option "correct":true and the others "correct":false.',
- 'Strong subject / skills':'About 2 very basic factual questions about their listed strong subjects or verified skills, matched to the stated level (no trait; exactly one option "correct":true; skip these if no subject or skill allows a basic question), and the rest trait-based questions about how they study or use those subjects/skills (every option has a trait).',
- 'Career opinion':'Questions about THEIR OWN choices from the vault: why they chose their field, what they like about their preferred role, how they feel about the current changes and trends in the field, what they have thought about their alternative options, why they did not choose other fields, and how they would handle money or family worries. Every option has a trait.'
+ 'Personality':'Ask about the student’s natural preferences and everyday working style. Do not mention a career. Options must be four genuinely plausible ways to respond to the same situation, not one obviously admirable answer.',
+ 'Situation reaction':'Use simple school, study, home, group-work, deadline, mistake or problem situations. Do not mention careers. Every option must be a realistic action a student might actually take; no option may sound stupid, lazy, heroic or morally superior.',
+ 'Interests & likings':'Use the student’s actual interests, hobbies and likings. Ask how they would explore, learn, build, discuss, observe or spend time on that exact item. Options must stay on the same topic and be equally natural.',
+ 'Basic intelligence':'Use varied, age-appropriate reasoning: number pattern, simple arithmetic, ordering, classification, word logic or spatial reasoning. Exactly one correct answer. Do not make questions depend on the student’s career, stream or prior subject knowledge.',
+ 'Strong subject / skills':'Use the student’s actual strong subjects and verified skills. Factual questions are allowed only when the subject/skill and level justify them. Otherwise ask how they learn, practise or apply that subject/skill. Never punish a student for not knowing an advanced topic.',
+ 'Career opinion':'Use the student’s own stated field, preferred roles, alternatives and reasons. Ask about reflection, priorities, uncertainty, trade-offs, exploration and next steps. Never tell the student which career is better; do not turn the non-negotiable career into the correct answer.'
 };
-function batchPrompt(cat,n,vault,stage){
-  const vr=VAULT_CATS.includes(cat)
-    ?'USE THE VAULT SPECIFICALLY: at least '+Math.ceil(n*0.6)+' of the '+n+' questions must literally mention a specific vault item by name (interest, hobby, liking, strong subject, skill, preferred role, chosen field, alternative, or a phrase from their reasons). Set "basedOn" to the exact vault source, e.g. "Interests: robotics". Use DIFFERENT vault items across questions where possible.'
-    :cat==='Basic intelligence'?'No vault needed for this category.'
-    :'The vault is optional here. Where it fits naturally you may use a liking or hobby. Set "basedOn" to the vault source or to "General".';
-  return`You are CareerMitra's test designer for Indian students. Write exactly ${n} multiple-choice questions (exactly 4 options each) of category "${cat}" for a career-guidance test. Student life stage: ${stage}.
+function buildTestPrompt(vault,stage){
+  const plan=TQ_PLAN.map(([cat,n])=>`${cat}: exactly ${n}`).join('\n');
+  return `You are CareerMitra’s neutral Test Zone designer. You are designing a self-discovery test, not selling a career.
 
-LANGUAGE (very important)
-- Use VERY SIMPLE, easy English that a Class 8 student understands. Short sentences. Everyday words only.
-- No hard words, no jargon, no long or tricky sentences. Each question and each option should be short and clear.
+STUDENT LIFE STAGE: ${stage}
+QUESTION PLAN:\n${plan}\nTOTAL: ${TQ_N}
 
-NEUTRALITY (very important)
-- The questions must NOT lean towards or favour any career, job or field. Do not praise or hint at any career.
-- The four options of a question must feel equally good and equally normal. Never make one option sound better than the rest.
+PERSONAL VAULT (the ONLY personal evidence you may use):\n${JSON.stringify(vault)}
 
-RULES
-1. Category brief: ${CAT_RULES[cat]}
-2. ${vr}
-3. Trait options: "trait" is exactly one letter of R,I,A,S,E,C (Holland codes) and the 4 options of a question use 4 different letters; there are no right or wrong answers. Vary which letters you use across the questions so all six letters appear fairly evenly. Knowledge/logic questions have no trait.
-4. Questions must be clear, short, neutral and all different from one another. No numeric scoring language.
-Return ONLY JSON: {"questions":[{"cat":"${cat}","basedOn":"...","q":"...","o":[{"text":"...","trait":"R"} or {"text":"...","correct":true}]}]}
+CORE PRINCIPLE
+- The student’s own information is the only basis for personalization.
+- Do not assume that a popular, prestigious, high-paying, government, technical, medical, business, creative or any other career is better.
+- Do not favour the non-negotiable career, preferred role, chosen field or any other item. Those are inputs to understand the student, not answers to push them toward.
+- Do not use age, gender, family income, location, school, marks or other profile details to steer a career unless the question genuinely asks about that exact personal factor. Never stereotype.
+- Do not reward or punish a student for choosing a particular option.
 
-PERSONAL VAULT:
-${JSON.stringify(vault)}`;
+QUESTION QUALITY
+- Very simple, polite English. Short sentences. One clear idea per question.
+- Every option must be plausible for a real student answering honestly.
+- Options must be comparable: similar length, same level of detail, same tone and the same kind of response.
+- No silly, fake, extreme, impossible, insulting, heroic or obviously wrong distractors.
+- No option should be obviously more mature, kind, intelligent, ambitious, safe or successful than the others.
+- Never make one option sound emotionally nicer or socially more acceptable.
+- Avoid double negatives, tricky wording and hidden assumptions.
+- Do not repeat the same question, same option pattern or same vault item unnecessarily.
+- Questions must measure preference/behaviour/interest/reflection, not whether the student can guess the “expected” answer.
+
+CATEGORY RULES
+${Object.entries(CAT_RULES).map(([k,v])=>`${k}: ${v}`).join('\n')}
+
+TRAIT MAPPING
+For non-factual questions, each of the four options must have a different Holland code from R,I,A,S,E,C. The code is an internal scoring label and must NOT be visible in the option text. Across the full test, rotate the combinations so no one trait repeatedly appears as the “good” or first-looking choice.
+For factual reasoning/knowledge questions, use exactly one correct:true and three plausible distractors. Distractors must be believable but clearly wrong after knowing the concept; never use nonsense.
+
+VAULT USE
+- Interests & likings: at least 3 of 4 questions must use different exact vault items.
+- Strong subject / skills: use actual listed subjects/verified skills where appropriate; do not invent skills.
+- Career opinion: use actual chosen field, preferred roles, alternatives or reasons, but keep the options neutral.
+- Personality and situation questions may use hobbies/likings only when natural.
+- Put the exact source in basedOn, e.g. “Interests: Robotics”, “Likings: Building things”, “Role: Data Scientist / ML Engineer”, “General reasoning”.
+
+SELF-CHECK BEFORE RETURNING
+For every question ask yourself: “Could a student reasonably choose any of these four options without being pushed toward a particular career or personality?” If not, rewrite it. Also check that the four options are all useful, natural and comparable.
+
+RETURN ONLY JSON:
+{"questions":[{"cat":"Category name","basedOn":"exact vault source or General reasoning","q":"question","o":[{"text":"option","trait":"R"},{"text":"option","trait":"I"},{"text":"option","trait":"A"},{"text":"option","trait":"S"}]}]}
+For factual questions use correct:true/false instead of trait.
+Return exactly ${TQ_N} questions with the exact category counts. No markdown.`;
 }
 async function makeQuestions(s){
   const v=s.vault;
   const vault={
-    interests:v.interests,hobbies:v.hobbies,likings:v.likings,
+    interests:arr(v.interests),hobbies:arr(v.hobbies),likings:arr(v.likings),
     strongSubjects:arr(v.subjects).map(x=>`${x.name} (${LEVELS[x.level-1]||'Good'})`),
     preferredRolesInPriorityOrder:roleNames(v),
     verifiedSkills:arr(v.skills).map(x=>`${x.name} (${x.level||''})`),
-    chosenField:v.field,reasonForField:v.whyField,
-    reasonNotOtherFields:v.whyNotOthers,alternativesConsidered:v.alternatives
+    nonNegotiableCareer:v.nonnegotiable||'',chosenField:v.field||'',reasonForField:v.whyField||'',
+    reasonNotOtherFields:v.whyNotOthers||'',alternativesConsidered:arr(v.alternatives)
   };
   const stage=STAGES[s.stage]?STAGES[s.stage].t+' — '+STAGES[s.stage].d:'student';
-  S.tload=0; window.CM_TEST_AI_SOURCES={};
-
-  /* One AI request creates the complete 25-question test. This is deliberate:
-     the AI sees the whole vault and can keep the test coherent, while avoiding
-     six independent free-model requests and unnecessary rate-limit pressure. */
-  const plan=TQ_PLAN.map(([cat,n])=>`${cat}: exactly ${n} questions`).join('\n');
-  const prompt=`You are CareerMitra's Test Zone AI for an Indian student.
-Create the COMPLETE test in ONE response.
-
-STUDENT LIFE STAGE: ${stage}
-QUESTION PLAN:\n${plan}
-TOTAL QUESTIONS: ${TQ_N}
-
-PERSONAL VAULT:\n${JSON.stringify(vault)}
-
-LANGUAGE:
-- Very simple English, suitable for a Class 8 student.
-- Short questions and short options.
-- No jargon.
-
-TEST DESIGN:
-- The test must be neutral. Do not favour any career.
-- Personality, situation, interest and career-opinion questions have no right/wrong answer.
-- Their four options must use four different Holland traits from R,I,A,S,E,C.
-- Basic intelligence questions have exactly one correct option and no trait.
-- Strong subject/skills questions may contain factual questions only when the vault gives enough information; otherwise make them trait-based.
-- Interests & likings and Career opinion MUST use actual vault items.
-- Avoid repeating the same idea or vault item unnecessarily.
-- Keep all categories balanced and exactly on the requested counts.
-
-RETURN ONLY JSON:
-{"questions":[{"cat":"Category name","basedOn":"exact vault source or General reasoning","q":"question","o":[{"text":"option","trait":"R"},{"text":"option","trait":"I"},{"text":"option","trait":"A"},{"text":"option","trait":"S"}]}]}
-For factual questions, replace trait with correct:true/false and use exactly one correct:true.
-The final array MUST contain exactly ${TQ_N} questions.\n`;
-
-  let result=await aiJson(prompt);
+  S.tload=0;window.CM_TEST_AI_SOURCES={};
+  const prompt=buildTestPrompt(vault,stage);
+  let result=await aiJson(prompt,{bypassCache:true});
   let all=validQuestions(result,TQ_N)||[];
+  let issues=all.length===TQ_N?questionQualityIssues(all,v):['AI response was incomplete or structurally invalid.'];
 
-  // AI is mandatory for the normal path. If the first AI response is
-  // incomplete/malformed, give AI one explicit repair pass BEFORE any
-  // built-in generator is allowed to run.
-  if(all.length!==TQ_N){
-    const repairPrompt=prompt+`\n\nRECOVERY PASS — YOUR PREVIOUS RESPONSE WAS INCOMPLETE OR INVALID.\nRegenerate the COMPLETE ${TQ_N}-question JSON in one response.\nDo not omit any category. Count every question before returning.\nReturn ONLY the JSON object.`;
+  // Quality repair stays AI-first. We do not silently downgrade a valid-looking but poor test.
+  if(all.length!==TQ_N||issues.length){
+    const repairPrompt=prompt+`\n\nQUALITY REPAIR PASS\nYour previous draft did not pass the following checks:\n${issues.slice(0,30).join('\n')}\nRegenerate the COMPLETE ${TQ_N}-question test from scratch. Fix the quality issues, especially biased/absurd options, repeated patterns, weak distractors and any steering toward a career. Return ONLY JSON.`;
     result=await aiJson(repairPrompt,{bypassCache:true});
     all=validQuestions(result,TQ_N)||[];
+    issues=all.length===TQ_N?questionQualityIssues(all,v):['AI repair was incomplete or invalid.'];
   }
 
-  const out={};
-  const sources={};
-
+  const out={};const sources={};
   for(const [cat,n] of TQ_PLAN){
-    const aiPart=all.filter(q=>String(q.cat||'').toLowerCase()===cat.toLowerCase()).slice(0,n);
-    const vaultEnough=!VAULT_CATS.includes(cat)||usesVault(aiPart,v)>=Math.ceil(n*0.6);
-    if(aiPart.length===n && vaultEnough){
-      aiPart.forEach(x=>{x.cat=cat;if(!x.basedOn)x.basedOn=VAULT_CATS.includes(cat)?'Your vault':'AI-generated from your profile'});
-      out[cat]=aiPart;sources[cat]='ai';
+    const aiPart=all.filter(q=>String(q.cat||'').trim().toLowerCase()===cat.toLowerCase());
+    const vaultNeed=VAULT_CATS.includes(cat)?Math.ceil(n*.75):0;
+    const vaultHit=VAULT_CATS.includes(cat)?usesVault(aiPart,v):n;
+    if(aiPart.length===n && vaultHit>=vaultNeed && !issues.some(x=>x.startsWith(cat+':'))){
+      out[cat]=aiPart.map(x=>({...x,cat}));sources[cat]='ai';
     }else{
+      // Last-resort only: existing built-in questions keep the app usable if the AI provider truly fails.
       out[cat]=localCat(v,cat,n);sources[cat]='builtin';
     }
   }
-
   window.CM_TEST_AI_SOURCES=sources;
   const q=TQ_PLAN.flatMap(([cat])=>out[cat]||[]);
   if(q.length!==TQ_N){window.CM_AI_ERROR='Test Zone could not assemble the complete test.';return null;}
@@ -689,39 +699,70 @@ The final array MUST contain exactly ${TQ_N} questions.\n`;
 }
 
 /* ================= analysis ================= */
+function aiCareerRecord(cand,i,st){
+  const name=String(cand&&cand.name||cand&&cand.career||'').trim();
+  const base=careerRecord(name);
+  const fit=String(cand&&cand.fit||'Possible');
+  const role={
+    ...(base||{}),
+    n:name||'Career direction',
+    c:base&&base.c?base.c:'',
+    kw:base&&base.kw?base.kw:[],
+    pros:base&&base.pros?base.pros:[],
+    cons:base&&base.cons?base.cons:[],
+    alt:base&&base.alt?base.alt:[],
+    mkt:base&&base.mkt?base.mkt:'Structured market information is not available for this exact role yet. Use Live Career Research before making a decision.',
+    rank:i,
+    score:typeof cand?.score==='number'?cand.score:(fit.toLowerCase()==='strong'?0.9:fit.toLowerCase()==='moderate'?0.7:0.5),
+    ph:0,oh:0,
+    vaultMatch:!!(st.vault&&[st.vault.nonnegotiable,...roleNames(st.vault),st.vault.field].filter(Boolean).some(x=>String(x).trim().toLowerCase()===name.toLowerCase())),
+    strong:arr(cand&&cand.evidence).map(String),
+    watch:arr(cand&&cand.watchouts).map(String),
+    aiReason:String(cand&&cand.reason||''),
+    aiFit:fit,
+    aiTradeoffs:arr(cand&&cand.tradeoffs).map(String),
+    aiPath:arr(cand&&cand.path).map(String),
+    aiAlternatives:arr(cand&&cand.alternatives).map(String)
+  };
+  if(!role.pros.length&&role.aiTradeoffs.length)role.cons=role.aiTradeoffs;
+  if(!role.alt.length&&role.aiAlternatives.length)role.alt=role.aiAlternatives;
+  return role;
+}
 function analyse(st){
-  const tally=st.test.tally;
+  const tally=st.test&&st.test.tally?st.test.tally:{R:0,I:0,A:0,S:0,E:0,C:0};
   const total=LET.reduce((a,k)=>a+(tally[k]||0),0)||1;
   const share={};LET.forEach(k=>share[k]=(tally[k]||0)/total);
   const order=[...LET].sort((a,b)=>share[b]-share[a]);
-  const v=st.vault,W=[3,2,1];
-  const pref=(roleNames(v).join(' ')+' '+(v.nonnegotiable||'')+' '+v.field).toLowerCase();
-  const other=[...arr(v.interests),...arr(v.hobbies),...arr(v.likings),...subjNames(v),...skillNames(v)].join(' ').toLowerCase();
-  const scored=CAREERS.map(c=>{
-    let s=0;c.c.split('').forEach((k,i)=>s+=share[k]*W[i]);
-    const ph=c.kw.filter(k=>rx(k).test(pref)).length,oh=c.kw.filter(k=>rx(k).test(other)).length;
-    return{c,score:s+Math.min(3,ph*2+oh)*0.25,ph,oh};
-  }).sort((a,b)=>b.score-a.score);
-  const picks=scored.slice(0,5);
-  scored.filter(x=>x.ph>0&&!picks.includes(x)).slice(0,2).forEach(x=>picks.push(x));
-  picks.sort((a,b)=>b.score-a.score);
-  const roles=picks.map((p,i)=>{
-    const strong=[],watch=[];
-    p.c.c.split('').forEach(k=>{
-      if(share[k]>=0.22)strong.push(`Your answers lean ${TR[k].n.toLowerCase()} (${TR[k].who}), which this role rewards.`);
-      else if(share[k]<=0.1)watch.push(`Your answers showed less preference for ${TR[k].n.toLowerCase()} work, which this role needs — you would have to build this side.`);
-    });
-    if(p.ph>0)strong.push('Matches the field or role you named in your Personal Vault.');
-    return{...p.c,rank:i,strong,watch,vaultMatch:p.ph>0};
-  });
-  const unmatched=roleNames(v).filter(r=>!CAREERS.some(c=>c.kw.some(k=>rx(k).test(r.toLowerCase()))||c.n.toLowerCase().includes(r.toLowerCase())));
+  const v=st.vault||{};
+  const ai=st.test&&st.test.ai||{};
+
+  // The AI result is the primary career analysis. The Holland tally remains only a transparent
+  // description of how the student answered the option-style questions; it never selects a career.
+  const aiList=arr(ai.rankedCareers).filter(x=>x&&typeof x.name==='string'&&x.name.trim()).slice(0,8);
+  let roles=[];
+  if(aiList.length){
+    roles=aiList.map((x,i)=>aiCareerRecord(x,i,st));
+  }else{
+    // Last-resort deterministic interpretation only when the AI analysis was genuinely unavailable.
+    const pref=(roleNames(v).join(' ')+' '+(v.nonnegotiable||'')+' '+(v.field||'')).toLowerCase();
+    const other=[...arr(v.interests),...arr(v.hobbies),...arr(v.likings),...subjNames(v),...skillNames(v)].join(' ').toLowerCase();
+    const scored=CAREERS.map(c=>{let score=0;c.c.split('').forEach((k,i)=>score+=share[k]*[3,2,1][i]);const ph=c.kw.filter(k=>rx(k).test(pref)).length,oh=c.kw.filter(k=>rx(k).test(other)).length;return{c,score:score+Math.min(3,ph*2+oh)*.25,ph,oh}}).sort((a,b)=>b.score-a.score);
+    roles=scored.slice(0,7).map((p,i)=>{const strong=[],watch=[];p.c.c.split('').forEach(k=>{if(share[k]>=.22)strong.push(`Your answers show some preference for ${TR[k].n.toLowerCase()} activities.`);else if(share[k]<=.1)watch.push(`You showed less preference for ${TR[k].n.toLowerCase()} activities.`)});if(p.ph>0)strong.push('This role was explicitly present in your Personal Vault.');return{...p.c,rank:i,strong,watch,ph:p.ph,oh:p.oh,vaultMatch:p.ph>0,aiFit:'Fallback'}});
+  }
+  const unmatched=roleNames(v).filter(r=>!roles.some(c=>c.n.toLowerCase()===r.toLowerCase())&&!CAREERS.some(c=>c.kw.some(k=>rx(k).test(r.toLowerCase()))||c.n.toLowerCase().includes(r.toLowerCase())));
   const [a,b]=order;
+  const type=`${TR[a].who}–${TR[b].who} (${a}${b})`;
+  const defaultTraits=[...TR[a].t,...TR[b].t.slice(0,3),...TR[order[2]].t.slice(0,1)];
+  const aiTraits=arr(ai.traits).map(String).filter(Boolean);
+  const aiCore=arr(ai.coreInterests).map(String).filter(Boolean);
+  const aiDirections=arr(ai.careerDirections).map(String).filter(Boolean);
   return{share,order,roles,unmatched,
-    type:`${TR[a].who}–${TR[b].who} (${a}${b})`,
-    traits:[...TR[a].t,...TR[b].t.slice(0,3),...TR[order[2]].t.slice(0,1)],
-    overall:`Your responses show a ${TR[a].who.toLowerCase()}-led profile (${TR[a].n}) supported by ${TR[b].who.toLowerCase()} strengths (${TR[b].n}). You tend to be ${TR[a].t[0].toLowerCase()} and ${TR[a].t[1].toLowerCase()}, with a ${TR[b].t[0].toLowerCase()} side that shows up when you work with others.`,
-    inclined:[a,b].map(k=>TR[k].cat),
-    interests:[...new Set([v.field,...arr(v.interests),...arr(v.hobbies),...arr(v.likings)].filter(Boolean))].slice(0,10)};
+    type:ai.personalityType||type,
+    traits:aiTraits.length?aiTraits:defaultTraits,
+    overall:ai.summary||`Your responses show a ${TR[a].who.toLowerCase()}-led pattern with ${TR[b].who.toLowerCase()} strengths.`,
+    inclined:aiDirections.length?aiDirections:arr(ai.inclined).length?arr(ai.inclined):[TR[a].cat,TR[b].cat],
+    interests:aiCore.length?aiCore:[...new Set([v.field,...arr(v.interests),...arr(v.hobbies),...arr(v.likings)].filter(Boolean))].slice(0,10),
+    source:aiList.length?'ai':'fallback'};
 }
 
 /* ================= family helpers ================= */
@@ -1039,8 +1080,8 @@ function sTest(){
   const stale=s.test&&s.vault&&(s.test.rev!==s.vault.rev);
   const dr=s.testDraft&&s.testDraft.rev===(s.vault||{}).rev&&arr(s.testDraft.q).length===TQ_N?s.testDraft:null;
   const resume=dr?`<div class="card next"><div><b>You have a test in progress</b><div class="muted small">${dr.a.filter(x=>x!=null).length} of ${TQ_N} answered — resume where you stopped.</div></div><button class="btn" data-act="resumetest">Resume test →</button></div>`:'';
-  return resume+`<div class="card"><h2>Test Zone</h2><p>${TQ_N} multiple-choice questions, 4 options each (about 8–10 minutes; progress is saved as you go). The questions are written in simple language and do not favour any career. They cover your personality, how you react in everyday situations, your interests and likings, a few very basic reasoning questions, the basics of your strong subjects and skills, and your own opinions about the field you chose, its trends and your alternatives.</p>
-   <p class="muted small">No score is given. You get your personality type, inclined careers and traits.</p>
+  return resume+`<div class="card"><h2>Test Zone</h2><p>${TQ_N} multiple-choice questions, 4 options each (about 8–10 minutes; progress is saved as you go). The AI uses your own Vault and your actual answers. It does not treat any career as the “right” answer. The options are designed to be equally reasonable, simple and respectful, so you can choose what genuinely feels closest to you.</p>
+   <p class="muted small">There is no right or wrong personality answer. The final analysis looks at patterns across your answers and clearly separates strong evidence from uncertainty.</p>
    <h3>What the AI will use from your vault</h3>${snapshot(s.vault)}
    <div class="row" style="margin-top:12px"><button class="btn ghost sm" data-act="tab" data-t="vault">Edit vault</button></div>
    ${stale?'<div class="note warn">Your vault changed after your last test. Retake the test to refresh your results.</div>':''}
@@ -1310,210 +1351,72 @@ function familyView(){
 function familyIntersectionBlock(st,an,fams){
   const acceptedConcerns=fams.flatMap(([id,f])=>arr(f.qa).filter(x=>x.accepted&&String(x.a||'').trim()).map(x=>({q:String(x.q||''),a:String(x.a||'')})));
   if(!acceptedConcerns.length)return '';
-
-  /*
-   * PANEL 3 — Common Ground v2
-   *
-   * Do not treat generic support as career evidence.
-   * First understand what each family answer MEANS, then compare that meaning
-   * against the student's actual Test Zone + Vault evidence.
-   */
-  const studentRoles=an.roles||[];
-  const studentRank={}; studentRoles.forEach((r,i)=>studentRank[r.n]=Math.max(0,1-i/Math.max(1,studentRoles.length)));
-  const vault=st.vault||{};
-  const prefText=([
-    roleNames(vault).join(' '), vault.nonnegotiable||'', vault.field||'',
-    arr(vault.interests).join(' '),arr(vault.hobbies).join(' '),arr(vault.likings).join(' '),
-    subjNames(vault).join(' '),skillNames(vault).join(' ')
-  ].join(' ')).toLowerCase();
-
-  const careerAliases={
-    'Doctor / Healthcare Professional':['doctor','doctors','medical','medicine','mbbs','surgeon','surgery','healthcare','health care','physician','hospital','life saving','life-saving'],
-    'Software Engineer':['software','developer','coding','programming','computer science','web developer','app developer'],
-    'Data Scientist / ML Engineer':['data scientist','machine learning','ml engineer','artificial intelligence','ai engineer','data science'],
-    'Cybersecurity Analyst':['cybersecurity','cyber security','ethical hacking','security analyst','hacking'],
-    'Defence / Space Scientist (DRDO, ISRO)':['drdo','isro','defence scientist','space scientist','aerospace','defence','defense'],
-    'Embedded / Robotics Engineer':['embedded','robotics','robot','iot','electronics','firmware','drone'],
-    'Teacher / Professor':['teacher','professor','teaching','lecturer','education'],
-    'Counsellor / Psychologist':['psychologist','psychology','counsellor','counselor','therapy','therapist'],
-    'Civil Services (IAS / IPS)':['ias','ips','upsc','civil services','government officer','administration'],
-    'Chartered Accountant / Finance Analyst':['chartered accountant','ca','finance analyst','accounting','investment','banking'],
-    'Journalist / Content Creator':['journalist','journalism','content creator','writer','media','youtube'],
-    'Mechanical / Civil Engineer':['mechanical engineer','civil engineer','mechanical','civil engineering'],
-    'Lawyer':['lawyer','advocate','law','llb','legal'],
-    'Marketing / Business Manager':['marketing','business manager','sales','mba','brand'],
-    'Research Scientist':['research scientist','scientist','research','phd','laboratory','lab']
-  };
-
-  function careerMatchesText(c,t){
-    t=String(t||'').toLowerCase();
-    const words=[c.n,...arr(c.kw),...(careerAliases[c.n]||[])].map(x=>String(x).toLowerCase());
-    return words.some(k=>k.length>=4&&t.includes(k));
+  const candidates=arr(an.roles).filter(r=>String(r.n||'').trim());
+  if(!candidates.length)return `<div class="card"><h2>Common ground</h2><p class="muted">There is not enough student-side career evidence to compare both sides yet.</p></div>`;
+  const aiOrder=arr(st.commonGroundAI&&st.commonGroundAI.picks).map(x=>String(x.career||'').trim()).filter(Boolean);
+  const studentRoleText=([roleNames(st.vault).join(' '),st.vault.nonnegotiable||'',st.vault.field||'',...arr(st.vault.interests),...arr(st.vault.hobbies),...arr(st.vault.likings),...subjNames(st.vault),...skillNames(st.vault)].join(' ')).toLowerCase();
+  const norm=x=>String(x||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  const careerText=c=>[c.n,c.mkt,...arr(c.pros),...arr(c.cons),...arr(c.alt),...arr(c.aiTradeoffs),...arr(c.aiAlternatives)].join(' ').toLowerCase();
+  function explicitMatch(answer,c){
+    const a=norm(answer),n=norm(c.n); if(!n)return false;
+    return a.includes(n)||n.includes(a)&&a.length>5;
   }
-  function careerText(c){
-    return `${c.n} ${c.mkt} ${arr(c.pros).join(' ')} ${arr(c.cons).join(' ')} ${arr(c.alt).join(' ')}`.toLowerCase();
+  function concernDimension(q,a){
+    const t=(q+' '+a).toLowerCase();
+    if(/salary|income|earning|money|financial|fee|fees|loan|debt|cost|budget/.test(t))return'finance';
+    if(/security|stable|stability|permanent|job security/.test(t))return'stability';
+    if(/future|scope|demand|growth|10 years|long term/.test(t))return'future';
+    if(/respect|relative|society|community|neighbour|status|prestige/.test(t))return'social';
+    if(/away from home|move|relocat|posting|transfer|city|home/.test(t))return'location';
+    if(/education|degree|college|study|training|course|how long/.test(t))return'education';
+    if(/work life|work-life|hours|stress|pressure|family time|on call/.test(t))return'worklife';
+    if(/competition|exam|selection|success rate/.test(t))return'competition';
+    if(/risk|uncertain|failure|backup|alternative/.test(t))return'risk';
+    return'';
   }
-
-  /* Convert each answer into a MEANING. Generic support/no-concern answers
-     intentionally produce zero career-selection evidence. */
-  function interpretFamilyAnswer(c,i){
-    const q=c.q.toLowerCase(), a=c.a.toLowerCase(), t=q+' '+a;
-    let kind='neutral', strength=0, dimensions=[], explicitCareers=[];
-
-    const noConstraint=/no problem|no issue|doesn.?t matter|don.?t care|dont care|whatever he wants|whatever she wants|support whatever|no limit|no loans|i am here for him|full support|already with him|i support him|i support her|salary is no problem|money is no problem|financially support|can support/.test(a);
-    const explicit=/i want him|i want her|want him to|want her to|prefer|my choice|my preference|should become|i would prefer|i would like/.test(a);
-    const concern=/worr|concern|afraid|risk|problem|scared|fear|tension|not sure|uncertain|doubt|difficult|hard|losing|failure|security|stable|stability/.test(a);
-
-    CAREERS.forEach(c=>{if(careerMatchesText(c,a))explicitCareers.push(c.n)});
-    const uniqueCareers=[...new Set(explicitCareers)];
-
-    if(uniqueCareers.length && (explicit || /surgeon|pilot|doctor|engineer|career|role|job/.test(q))){
-      kind=explicit?'explicit_preference':'career_specific_support';
-      strength=explicit?1:.8;
-    }else if(noConstraint){
-      kind='no_constraint'; strength=0;
-    }else if(concern){
-      kind='concern'; strength=1;
-    }else if(/support|trust|happy|happiness|life|dream|interest|passion|choice/.test(a)){
-      kind='general_support'; strength=0;
-    }
-
-    if(/salary|income|earning|money|financial|spend|fee|fees|loan|debt|cost|budget/.test(t))dimensions.push('finance');
-    if(/security|stable|stability|job security|permanent|government job/.test(t))dimensions.push('stability');
-    if(/future|scope|demand|growth|10 years|long term/.test(t))dimensions.push('future');
-    if(/respect|relative|society|community|neighbour|status/.test(t))dimensions.push('social');
-    if(/away from home|move|relocat|posting|transfer|city|home/.test(t))dimensions.push('location');
-    if(/education|degree|college|study|training|course|how long/.test(t))dimensions.push('education');
-    if(/work life|work-life|hours|stress|pressure|family time|on call/.test(t))dimensions.push('worklife');
-    if(/competition|exam|selection|success rate/.test(t))dimensions.push('competition');
-    if(/risk|uncertain|failure|backup|alternative/.test(t))dimensions.push('risk');
-    if(/interest|passion|choice|dream|liking|like|want/.test(t))dimensions.push('interest');
-    if(/skills|result|prove|experience|mentor/.test(t))dimensions.push('proof');
-    return {q:c.q,a:c.a,index:i+1,kind,strength,dimensions:[...new Set(dimensions)],careers:uniqueCareers};
-  }
-
-  const familySignals=acceptedConcerns.map(interpretFamilyAnswer);
-  const explicitPreferences=familySignals.filter(x=>x.kind==='explicit_preference'||x.kind==='career_specific_support' || x.careers.length);
-  const constraints=familySignals.filter(x=>x.kind==='concern');
-  const neutralAnswers=familySignals.filter(x=>x.kind==='no_constraint'||x.kind==='general_support');
-
-  function constraintEffect(signal,c){
-    const q=(signal.q+' '+signal.a).toLowerCase();
-    const hay=careerText(c);
-    let label=''; let effect=0;
-    if(signal.kind!=='concern')return null;
-    if(/job security|stable|stability|secure/.test(q)){
-      label='job stability'; effect=/stable|security|secure|government|public|steady/.test(hay)?1:-1;
-    }else if(/salary|income|earning|financial|money/.test(q)){
-      label='income / earning'; effect=/salary|pay|earning|income|lpa|high demand/.test(hay)?1:-1;
-    }else if(/future|scope|demand|growth/.test(q)){
-      label='future scope'; effect=/demand|growth|growing|stable|expanding/.test(hay)?1:-1;
-    }else if(/away from home|move|relocat|posting|transfer|location/.test(q)){
-      label='location'; effect=/remote|local|hybrid|flexible/.test(hay)?1:/relocation|transfers|postings|travel/.test(hay)?-1:0;
-    }else if(/education|degree|study|training|how long/.test(q)){
-      label='education path'; effect=/clear credential|degree|diploma|certification|multiple routes/.test(hay)?1:/very long|long study|phd|postgrad|postgraduate/.test(hay)?-1:0;
-    }else if(/respect|relative|society|community|status/.test(q)){
-      label='social respect'; effect=/respect|prestige|professional|mission/.test(hay)?1:/public criticism|low respect/.test(hay)?-1:0;
-    }else if(/risk|failure|uncertain|backup|alternative/.test(q)){
-      label='career risk'; effect=/stable|security|multiple alternatives|strong demand/.test(hay)?1:/high failure|uncertain|variable|inconsistent/.test(hay)?-1:0;
-    }else if(/competition|exam|selection/.test(q)){
-      label='selection risk'; effect=/highly competitive|extremely competitive|very low success|tough exams/.test(hay)?-1:/high demand|multiple routes|accessible/.test(hay)?1:0;
-    }
-    return label?{label,effect}:null;
-  }
-
-  function familyAnalysis(c){
-    let score=0,matched=[],conflicts=[];
-    const direct=[];
-    familySignals.forEach(sig=>{
-      if(sig.careers.some(n=>n.toLowerCase()===c.n.toLowerCase())){
-        const label=sig.kind==='explicit_preference'?'Explicit family preference':'Family-specific support';
-        const pts=sig.kind==='explicit_preference'?7:4;
-        score+=pts; direct.push(sig);
-        matched.push({label,q:sig.q,a:sig.a,score:pts,strong:true});
+  function familyEvidence(c){
+    const matched=[],conflicts=[];
+    acceptedConcerns.forEach(sig=>{
+      const q=sig.q.toLowerCase(),a=sig.a.toLowerCase(),t=q+' '+a,hay=careerText(c);
+      if(explicitMatch(sig.a,c.n)){
+        matched.push({label:'Family explicitly mentioned this career',a:sig.a});
         return;
       }
-      const ce=constraintEffect(sig,c);
-      if(ce&&ce.effect!==0){
-        score+=ce.effect*2;
-        (ce.effect>0?matched:conflicts).push({label:ce.label,q:sig.q,a:sig.a,score:ce.effect*2,strong:false});
-      }
+      // Generic support, “money is no problem”, “whatever he wants”, etc. is context only.
+      if(/whatever|no problem|no issue|dont care|don\.?t care|full support|i support|trust him|trust her|his life|her life|money is no problem|salary is no problem/.test(a))return;
+      const d=concernDimension(q,sig.a); if(!d)return;
+      let pos=false,neg=false,label='';
+      if(d==='finance'){label='financial concern';pos=/salary|pay|earning|income|demand|market/.test(hay);neg=/high cost|expensive|low pay|uncertain income/.test(hay)}
+      if(d==='stability'){label='stability concern';pos=/stable|security|secure|steady|government|public sector/.test(hay);neg=/uncertain|volatile|unstable|contract|high risk/.test(hay)}
+      if(d==='future'){label='future-scope concern';pos=/demand|growth|growing|future|expanding|opportunit/.test(hay);neg=/declin|shrinking|uncertain future/.test(hay)}
+      if(d==='social'){label='social-respect concern';pos=/respect|prestige|professional|mission/.test(hay);neg=/low respect|stigma/.test(hay)}
+      if(d==='location'){label='location concern';pos=/remote|local|hybrid|flexible/.test(hay);neg=/relocation|transfer|posting|travel|away from home/.test(hay)}
+      if(d==='education'){label='education-path concern';pos=/degree|diploma|certif|training|clear path/.test(hay);neg=/very long|long study|phd|postgraduate/.test(hay)}
+      if(d==='worklife'){label='work-life concern';pos=/flexible|work life|work-life|regular hours/.test(hay);neg=/stress|long hours|on call|pressure/.test(hay)}
+      if(d==='competition'){label='competition concern';pos=/multiple routes|many employers|demand|opportunit/.test(hay);neg=/competitive|high competition|tough exam|low success/.test(hay)}
+      if(d==='risk'){label='career-risk concern';pos=/stable|security|multiple routes|demand|alternative/.test(hay);neg=/uncertain|high risk|variable/.test(hay)}
+      if(pos)matched.push({label,a:sig.a}); if(neg)conflicts.push({label,a:sig.a});
     });
-    // General support and no-constraint answers are displayed as context, never as career evidence.
-    return {score,matched,conflicts,direct,context:neutralAnswers};
+    return{matched,conflicts};
   }
-
-  function studentAnalysis(c){
-    const ss=studentRank[c.n]||0;
-    const kwHits=arr(c.kw).filter(k=>rx(k).test(prefText)).length;
-    const personality=(c.c||'').split('').reduce((sum,k)=>sum+(an.share[k]||0),0)/Math.max(1,(c.c||'').length);
-    const directRole=roleNames(vault).some(r=>c.kw.some(k=>rx(k).test(String(r).toLowerCase())))?1:0;
-    const nonneg=String(vault.nonnegotiable||'').toLowerCase();
-    const nonnegMatch=careerMatchesText(c,nonneg);
-    const vaultHits=Math.min(5,kwHits);
-    const fit=(ss*4)+(vaultHits*.9)+(directRole*1.5)+(personality*2)+(nonnegMatch?3:0);
-    const evidence=[];
-    if(ss>0){
-      const rank=Math.max(1,studentRoles.findIndex(r=>r.n===c.n)+1);
-      evidence.push(`Test Zone ranking: #${rank} among analysed roles.`);
-    }
-    const topTraits=an.order.slice(0,2).map(k=>TR[k]&&TR[k].n).filter(Boolean);
-    if(topTraits.length)evidence.push(`Personality pattern: ${topTraits.join(' + ')}.`);
-    if(vaultHits)evidence.push(`${vaultHits} Personal Vault signals match this career.`);
-    if(directRole)evidence.push('The student explicitly listed a related role/field in the Personal Vault.');
-    if(nonnegMatch)evidence.push('This matches the student’s non-negotiable career.');
-    return {fit,evidence,kwHits,directRole,nonnegMatch};
-  }
-
-  const scored=CAREERS.map(c=>{
-    const fs=familyAnalysis(c), ss=studentAnalysis(c);
-    const explicitFamily=fs.direct.length>0;
-    const genuineFamilyEvidence=fs.matched.length>0;
-    const familyScore=fs.score;
-    // A generic "I support him" answer cannot make a career eligible.
-    const total=(ss.fit*.58)+(Math.max(-4,Math.min(10,familyScore))*.42);
-    return{c,fs,ss,total,explicitFamily,genuineFamilyEvidence};
-  }).sort((a,b)=>b.total-a.total);
-
-  // Eligibility is deliberately strict. A career needs meaningful student evidence AND
-  // actual career-specific family evidence OR a real family constraint it satisfies.
-  const eligible=scored.filter(x=>x.ss.fit>=1.5 && x.genuineFamilyEvidence && x.fs.score>0);
-  const aiOrder=arr(st.commonGroundAI&&st.commonGroundAI.picks).map(x=>String(x.career||'').trim()).filter(Boolean);
-  const aiEligible=aiOrder.map(name=>eligible.find(x=>x.c.n.toLowerCase()===name.toLowerCase())).filter(Boolean);
-  const picks=(aiEligible.length?aiEligible:eligible).slice(0,3);
-  const familyPreferences=[...new Set(explicitPreferences.flatMap(x=>x.careers))];
-  const maxStudent=Math.max(1,...scored.map(x=>x.ss.fit));
-  const maxFamily=Math.max(1,...scored.map(x=>Math.max(0,x.fs.score)));
-
-  const preferenceHTML=familyPreferences.length?`<div class="note info small" style="margin-top:10px"><b>Family's strongest stated preferences</b><ul style="margin:5px 0 0;padding-left:18px">${familyPreferences.map(x=>`<li><b>${esc(x)}</b> — explicitly mentioned by the family.</li>`).join('')}</ul></div>`:'';
-  const neutralCount=neutralAnswers.length;
-
-  return `<div class="card" style="border-width:2px;border-color:var(--brand)">
-    <div class="row sp"><div><div class="muted small">Family + Student intersection</div><h2 style="margin:3px 0">🎯 ${picks.length?'Top '+picks.length+' genuine common-ground careers':'No genuine common-ground career found yet'}</h2></div><span class="pill y">Test + Vault + ${acceptedConcerns.length} family answers${aiEligible.length?' · AI cross-checked':''}</span></div>
-    <p class="muted small">This section first interprets each family answer as a preference, concern, or neutral/supportive statement. Generic answers such as “I support whatever he wants” are <b>not</b> treated as evidence for a particular career. A career appears only when the student has evidence for it and the family has career-specific evidence or a real constraint that it satisfies.</p>
-    ${preferenceHTML}
-    ${constraints.length?`<div class="note small" style="margin-top:10px"><b>Family concerns detected:</b> ${esc([...new Set(constraints.flatMap(x=>x.dimensions))].join(' · ')||'Specific concerns recorded')} · These are used as constraints, not as automatic career preferences.</div>`:''}
-    ${neutralCount?`<div class="muted small" style="margin-top:8px">${neutralCount} family answers were interpreted as general support/no constraint and therefore add no artificial career points.</div>`:''}
-    ${picks.length?`<div class="grid2" style="margin-top:12px">${picks.map((x,i)=>{
-      const studentPct=Math.max(1,Math.min(99,Math.round((x.ss.fit/maxStudent)*100)));
-      const familyPct=Math.max(1,Math.min(99,Math.round((Math.max(0,x.fs.score)/maxFamily)*100)));
-      const overall=Math.max(1,Math.min(99,Math.round((x.ss.fit/maxStudent*.58 + Math.max(0,x.fs.score)/maxFamily*.42)*100)));
-      return `<div class="qa" style="margin:0">
-        <div class="row sp"><b>${i+1}. ${esc(x.c.n)}</b><span class="fit s">${overall}% evidence alignment</span></div>
-        <p class="small" style="margin:7px 0"><b>Why it fits the student:</b> ${esc(x.ss.evidence.join(' ')||'Student evidence is limited.')}</p>
-        <div class="note info small" style="margin-top:8px"><b>Family evidence supporting this career</b>
-          ${x.fs.matched.length?`<ul style="margin:5px 0 0;padding-left:18px">${x.fs.matched.slice(0,6).map(m=>`<li><b>${esc(m.label)}</b> — “${esc(m.a.slice(0,220))}${m.a.length>220?'…':''}”</li>`).join('')}</ul>`:'<div style="margin-top:5px">No career-specific family evidence found.</div>'}
-        </div>
-        ${x.fs.conflicts.length?`<div class="note bad small" style="margin-top:8px"><b>Family conflict / trade-off</b><ul style="margin:5px 0 0;padding-left:18px">${x.fs.conflicts.slice(0,4).map(v=>`<li>${esc(v.label)} — “${esc(v.a.slice(0,180))}${v.a.length>180?'…':''}”</li>`).join('')}</ul></div>`:''}
-        ${x.fs.context.length?`<div class="muted small" style="margin-top:8px"><b>Context only:</b> Family support/no-constraint answers were not counted as career evidence.</div>`:''}
-        <div class="pc" style="margin-top:10px"><div class="pros"><h4>Pros</h4><ul>${x.c.pros.map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div><div class="cons"><h4>Cons / trade-offs</h4><ul>${x.c.cons.map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div></div>
-        <h4 style="margin:12px 0 4px">Market, demand & pay</h4><p class="small" style="margin:0">${esc(x.c.mkt)}</p>
-        <div class="note info small" style="margin-top:10px"><b>Education & learning pathway</b><br>🎓 <b>Academic:</b> ${esc(learningPath(x.c).academic)}<br><b>Vocational / Diploma:</b> ${esc(learningPath(x.c).vocational)}<br><b>Certifications:</b> ${learningPath(x.c).cert.map(esc).join(', ')}<br><b>Job-ready skills:</b> ${learningPath(x.c).skills.map(esc).join(', ')}</div>
-        <div class="trait"><span>Student fit</span><div class="bar"><i style="width:${studentPct}%"></i></div><span>${studentPct}%</span></div>
-        <div class="trait"><span>Family evidence fit</span><div class="bar"><i style="width:${familyPct}%"></i></div><span>${familyPct}%</span></div>
-      </div>`;
-    }).join('')}</div>`:`<div class="note bad" style="margin-top:12px"><b>No career is being forced into the Top 3.</b><br>The current student and family evidence does not produce three genuine overlaps. Review the Family Perspective or add clearer career-specific preferences/concerns.</div>`}
-    <p class="muted small" style="margin-bottom:0">Decision-support only. The panel deliberately separates explicit family preferences, real concerns, and generic support so that a high score cannot be created from vague wording.</p>
+  const byName=name=>candidates.find(c=>norm(c.n)===norm(name));
+  const ordered=(aiOrder.map(byName).filter(Boolean).concat(candidates.filter(c=>!aiOrder.some(n=>norm(n)===norm(c.n))))).slice(0,8);
+  const scored=ordered.map((c,i)=>{const fe=familyEvidence(c);const studentFit=Math.max(0,Math.min(100,Math.round((c.score||0)*100)));const total=(fe.matched.length*18)-(fe.conflicts.length*14)+(c.vaultMatch?10:0);return{c,fe,studentFit,total}});
+  const eligible=scored.filter(x=>x.fe.matched.length>0&&!x.fe.conflicts.length).sort((a,b)=>b.total-a.total);
+  const picks=(aiOrder.length?aiOrder.map(byName).filter(Boolean).map(c=>scored.find(x=>x.c===c)).filter(x=>x&&x.fe.matched.length&&!x.fe.conflicts.length):eligible).slice(0,3);
+  const maxStudent=Math.max(1,...scored.map(x=>x.studentFit));
+  return`<div class="card" style="border-width:2px;border-color:var(--brand)">
+    <div class="row sp"><div><div class="muted small">Family + Student intersection</div><h2 style="margin:3px 0">🎯 ${picks.length?'Evidence-based common ground':'No clear common ground found yet'}</h2></div><span class="pill y">Student evidence + ${acceptedConcerns.length} family answers${aiOrder.length?' · AI cross-checked':''}</span></div>
+    <p class="muted small">Only the student’s own Test Zone/Vault evidence and the family’s actual answers are used. General support statements are not treated as proof for a career. If the evidence does not support an overlap, CareerMitra does not force one.</p>
+    ${picks.length?`<div class="grid2" style="margin-top:12px">${picks.map((x,i)=>{const familyPct=Math.max(1,Math.min(99,50+x.fe.matched.length*15-x.fe.conflicts.length*15));const studentPct=Math.max(1,Math.min(99,x.studentFit/maxStudent*100));return `<div class="qa" style="margin:0"><div class="row sp"><b>${i+1}. ${esc(x.c.n)}</b><span class="fit s">Common ground</span></div>
+      <p class="small"><b>Why it appears for the student:</b> ${esc(x.c.aiReason||x.c.strong.join(' ')||'The AI analysis found a match in the student’s responses.')}</p>
+      ${x.c.strong.length?`<div class="note info small"><b>Student evidence</b><ul style="margin:5px 0 0;padding-left:18px">${x.c.strong.slice(0,5).map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div>`:''}
+      <div class="note info small" style="margin-top:8px"><b>Family evidence</b><ul style="margin:5px 0 0;padding-left:18px">${x.fe.matched.slice(0,6).map(v=>`<li><b>${esc(v.label)}</b> — “${esc(v.a.slice(0,220))}${v.a.length>220?'…':''}”</li>`).join('')}</ul></div>
+      ${x.fe.conflicts.length?`<div class="note bad small" style="margin-top:8px"><b>Trade-offs found</b><ul style="margin:5px 0 0;padding-left:18px">${x.fe.conflicts.slice(0,4).map(v=>`<li>${esc(v.label)} — “${esc(v.a.slice(0,180))}${v.a.length>180?'…':''}”</li>`).join('')}</ul></div>`:''}
+      <div class="pc" style="margin-top:10px"><div class="pros"><h4>Pros</h4>${x.c.pros.length?`<ul>${x.c.pros.map(v=>`<li>${esc(v)}</li>`).join('')}</ul>`:'<p class="muted small">Not available in the structured database yet.</p>'}</div><div class="cons"><h4>Cons / trade-offs</h4>${x.c.cons.length?`<ul>${x.c.cons.map(v=>`<li>${esc(v)}</li>`).join('')}</ul>`:'<p class="muted small">Not available in the structured database yet.</p>'}</div></div>
+      <p class="muted small">The percentages below are evidence indicators, not probability of success or a recommendation.</p><div class="trait"><span>Student evidence</span><div class="bar"><i style="width:${studentPct}%"></i></div><span>${Math.round(studentPct)}%</span></div><div class="trait"><span>Family evidence</span><div class="bar"><i style="width:${familyPct}%"></i></div><span>${familyPct}%</span></div>
+    </div>`}).join('')}</div>`:`<div class="note info" style="margin-top:12px"><b>No career is being forced into the common-ground list.</b><br>The current family answers do not provide clear positive evidence for any of the student’s analysed directions without a meaningful conflict. That is a valid result.</div>`}
+    <p class="muted small" style="margin-bottom:0">This is decision support, not a verdict. The student’s personal choice remains visible separately, and uncertainty or disagreement is kept visible.</p>
   </div>`;
 }
 async function requestCommonGroundAI(){
@@ -1531,7 +1434,7 @@ async function requestCommonGroundAI(){
     if(s.commonGroundAIPending)return;
     s.commonGroundAIPending=true;
     const an=analyse(s);
-    const careers=CAREERS.map(c=>({name:c.n,profile:c.c,keywords:c.kw,market:c.mkt,pros:c.pros,cons:c.cons,alternatives:c.alt}));
+    const careers=an.roles.map(c=>({name:c.n,profile:c.c,market:c.mkt,pros:c.pros,cons:c.cons,alternatives:c.alt,evidence:c.strong,watchouts:c.watch,reason:c.aiReason||''}));
     const prompt=`You are CareerMitra's strict Common Ground decision-support analyst.\n\nYour job is NOT to make generic career suggestions. Select up to 3 careers only after comparing BOTH sides.\n\nSTUDENT TEST ANALYSIS:\n${JSON.stringify({personalityType:an.type,personalityShare:an.share,rankedCareers:an.roles.slice(0,8).map(r=>({name:r.n,rank:r.rank,fitEvidence:r.strong,watchouts:r.watch})),vault:{interests:s.vault.interests,hobbies:s.vault.hobbies,likings:s.vault.likings,strongSubjects:subjNames(s.vault),skills:skillNames(s.vault),preferredRoles:roleNames(s.vault),field:s.vault.field,nonNegotiable:s.vault.nonnegotiable,alternatives:s.vault.alternatives}})}\n\nACCEPTED FAMILY CONCERNS (use the actual answers, not assumptions):\n${JSON.stringify(acceptedConcerns)}\n\nCAREER CANDIDATES:\n${JSON.stringify(careers)}\n\nSTRICT RULES:\n1. A career must have evidence of student fit AND evidence addressing at least one real family concern.\n2. Never claim a family concern is satisfied unless the career data actually supports it.\n3. If a career conflicts with an important concern, record the conflict. Do not hide it.\n4. Do not select a career merely because it is popular, high-paying, or already the non-negotiable career.\n5. The student's non-negotiable career must remain visible separately; it may be selected only if BOTH sides support it.\n6. Use the student's Test Zone pattern, not just their typed preference.\n7. Use the parent's actual wording as evidence.\n8. If fewer than 3 careers genuinely satisfy both sides, return fewer than 3. NEVER fill the list with weak or invented matches.\n9. Return only JSON.\n\nFORMAT:\n{"picks":[{"career":"exact candidate name","studentEvidence":["..."],"familyEvidence":["..."],"conflicts":["..."],"fit":"Strong|Moderate","reason":"short explanation"}]}`;
     let ai=await aiJson(prompt);
     let picks=Array.isArray(ai&&ai.picks)?ai.picks.filter(x=>x&&typeof x.career==='string').slice(0,3):[];
@@ -1788,32 +1691,67 @@ function localTestAnalysis(tally,reasoning,v){
 
 async function finishTest(){
   const s=stu(),{q,a}=S.tq,tally={R:0,I:0,A:0,S:0,E:0,C:0};let reasoning=0;
-  /* Trait answers fill the personality tally. Right answers in knowledge / logic questions are only counted
-     as reasoning and do not add to any trait. */
-  q.forEach((qq,i)=>{const o=qq.o[a[i]];if(o&&o.trait)tally[o.trait]++;else if(o&&o.correct)reasoning++});
+  const responses=q.map((qq,i)=>{
+    const o=qq.o[a[i]];
+    if(o&&o.trait)tally[o.trait]++;else if(o&&o.correct)reasoning++;
+    return{category:qq.cat,question:qq.q,option:o?o.text:'',trait:o&&o.trait||null,correct:o&&o.correct===true};
+  });
   S.tstate='analysing';render();
   const v=s.vault;
-  const prompt=`You are a warm, practical career counsellor. A student completed a personality-and-interest test (no scores). Holland-code tallies (R Realistic, I Investigative, A Artistic, S Social, E Enterprising, C Conventional): ${JSON.stringify(tally)}. Reasoning questions answered correctly: ${reasoning}. Student's vault: ${JSON.stringify({field:v.field,interests:v.interests,hobbies:v.hobbies,likings:v.likings,strongSubjects:subjNames(v),preferredRoles:roleNames(v),alternatives:v.alternatives})}.
-Return ONLY JSON: {"summary":"2-3 sentences addressed to the student ('You…') describing their overall personality, no numbers","coreInterests":["up to 6 short phrases"],"traits":["up to 8 single-word or short traits"],"careerInclination":"1-2 sentences on the kind of careers they lean towards and why"}`;
+  const analysisPrompt=`You are CareerMitra’s neutral, humble and careful career-analysis AI. You are NOT a recruiter, marketer, parent or career seller.
 
-  let r=await aiJson(prompt);
-  let usedAI=!!(r&&typeof r.summary==='string'&&Array.isArray(r.coreInterests)&&Array.isArray(r.traits)&&typeof r.careerInclination==='string');
-  let ok=usedAI;
+Your task is to understand this student from the evidence they actually gave. Do not push them toward any career.
 
-  /*
-     Finishing the test must NEVER get blocked by a temporary OpenRouter
-     free-tier rate limit. The question-generation status remains unchanged: 
-     the orange dot is only for built-in question generation.
-     If the final counselling-summary request is rate-limited, create the
-     summary locally from the already-computed answers and save the test.
-  */
-  if(!ok){
+NON-NEGOTIABLE RULES
+- Use ONLY the supplied Personal Vault and the student’s actual Test Zone responses.
+- Do not use popularity, prestige, salary, social status, government/private preference, gender stereotypes, region stereotypes or your own idea of a “good career”.
+- The student’s non-negotiable career and preferred roles are evidence of preference, not proof of aptitude or the correct answer.
+- Do not let a named career dominate the result merely because it appears in the Vault.
+- Do not infer personality from a factual question being answered correctly. Use factual questions only for the reasoning/knowledge part.
+- Look for patterns across multiple responses. One answer should rarely decide a conclusion.
+- Separate what the student clearly showed from what is uncertain.
+- If the evidence is weak or mixed, say so. Do not manufacture confidence.
+- Career suggestions must come from the student’s evidence, not from a fixed “best careers” list. You may return a career not present in the app’s structured database.
+- Be neutral, respectful, soft-spoken and easy to understand. Never say the student “should” choose a career.
+
+PERSONAL VAULT:
+${JSON.stringify({stage:s.stage,interests:v.interests,hobbies:v.hobbies,likings:v.likings,strongSubjects:subjNames(v),verifiedSkills:skillNames(v),preferredRoles:roleNames(v),nonNegotiable:v.nonnegotiable,field:v.field,whyField:v.whyField,whyNotOthers:v.whyNotOthers,alternatives:v.alternatives})}
+
+TEST RESPONSES (the chosen option text is the important evidence):
+${JSON.stringify(responses)}
+
+TECHNICAL TALLY (secondary context only; do not let it override the actual responses):
+${JSON.stringify(tally)}
+Reasoning questions correct: ${reasoning}
+
+ANALYSIS TASK
+1. Give a short, gentle summary of the observed pattern.
+2. List core interests only when they are supported by repeated Vault/test evidence.
+3. Give a few neutral traits that describe observed behaviour, not labels of worth.
+4. Give up to 5 career directions. Rank them only by how well the student’s own evidence fits. Do NOT fill all 5 if evidence is weak.
+5. For every career direction give: exact name, fit Strong/Moderate/Possible, 2–5 evidence points tied to the student’s actual responses, possible watchouts or missing evidence, and a short reason.
+6. Include careerDirections such as broad work styles only when supported by the evidence.
+7. If the student’s answers are genuinely mixed, say “mixed evidence” rather than forcing a clean personality story.
+
+RETURN ONLY JSON:
+{"summary":"2-4 simple sentences","personalityType":"short neutral description","coreInterests":["..."],"traits":["..."],"careerDirections":["..."],"rankedCareers":[{"name":"career direction","fit":"Strong|Moderate|Possible","score":0.0,"evidence":["..."],"watchouts":["..."],"tradeoffs":["..."],"reason":"...","path":["..."],"alternatives":["..."]}],"careerInclination":"1-2 gentle sentences"}`;
+
+  let r=await aiJson(analysisPrompt,{bypassCache:true});
+  let usedAI=!!(r&&typeof r.summary==='string'&&Array.isArray(r.rankedCareers)&&Array.isArray(r.traits)&&Array.isArray(r.coreInterests));
+  if(!usedAI){
+    r=await aiJson(analysisPrompt+`\n\nRECOVERY PASS: Re-read every supplied response. Return a complete valid JSON analysis. Do not invent a career preference and do not omit rankedCareers if there is enough evidence. If evidence is insufficient, return fewer careers. JSON only.`,{bypassCache:true});
+    usedAI=!!(r&&typeof r.summary==='string'&&Array.isArray(r.rankedCareers)&&Array.isArray(r.traits)&&Array.isArray(r.coreInterests));
+  }
+  if(!usedAI){
     r=localTestAnalysis(tally,reasoning,v);
     usedAI=false;
-    ok=true;
   }
-
-  s.test={tally,reasoning,takenAt:Date.now(),aiSource:usedAI?'ai':'builtin',rev:v.rev,ai:{summary:r.summary,coreInterests:r.coreInterests.slice(0,6).map(String),traits:r.traits.slice(0,8).map(String),careerInclination:r.careerInclination}};
+  const aiPayload={
+    summary:String(r.summary||''),coreInterests:arr(r.coreInterests).slice(0,6).map(String),traits:arr(r.traits).slice(0,8).map(String),
+    careerInclination:String(r.careerInclination||''),personalityType:String(r.personalityType||''),
+    careerDirections:arr(r.careerDirections).slice(0,6).map(String),rankedCareers:arr(r.rankedCareers).slice(0,8).map(x=>({name:String(x&&x.name||''),fit:String(x&&x.fit||'Possible'),score:typeof x?.score==='number'?x.score:null,evidence:arr(x&&x.evidence).slice(0,5).map(String),watchouts:arr(x&&x.watchouts).slice(0,5).map(String),tradeoffs:arr(x&&x.tradeoffs).slice(0,5).map(String),reason:String(x&&x.reason||''),path:arr(x&&x.path).slice(0,6).map(String),alternatives:arr(x&&x.alternatives).slice(0,6).map(String)})).filter(x=>x.name)
+  };
+  s.test={tally,reasoning,takenAt:Date.now(),aiSource:usedAI?'ai':'builtin',rev:v.rev,ai:aiPayload,responses};
   s.progress.score=false;s.progress.options=false;delete s.testDraft;
   touch(s);save();S.tstate='idle';S.tq=null;S.tab='score';toast('Test complete — here’s your scorecard');render();
 }
