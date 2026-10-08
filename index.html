@@ -231,7 +231,14 @@ async function aiJson(prompt,opts={}){
         return null;
       }
       const out=(data&&data.ok&&data.data&&typeof data.data==='object')?data.data:(data&&typeof data==='object'&&!data.error?data:null);
-      if(out){AI_READY=true;window.CM_AI_ERROR='';if(!bypassCache)cmWriteCache(cacheKey,out);return out}
+      if(out){
+        const usedFallback=Boolean(data&&data.fallbackUsed);
+        AI_READY=!usedFallback;
+        window.CM_AI_ERROR=usedFallback?(data.warning||'AI synthesis was temporarily unavailable; source-backed fallback was used.'):'';
+        if(usedFallback) out._aiFallback=true;
+        if(!bypassCache&&!usedFallback)cmWriteCache(cacheKey,out);
+        return out
+      }
       window.CM_AI_ERROR=(data&&data.error)||'AI returned no usable data.';
       return null;
     }catch(e){
@@ -647,8 +654,18 @@ RETURN ONLY JSON:
 For factual questions, replace trait with correct:true/false and use exactly one correct:true.
 The final array MUST contain exactly ${TQ_N} questions.\n`;
 
-  const result=await aiJson(prompt);
-  const all=validQuestions(result,TQ_N)||[];
+  let result=await aiJson(prompt);
+  let all=validQuestions(result,TQ_N)||[];
+
+  // AI is mandatory for the normal path. If the first AI response is
+  // incomplete/malformed, give AI one explicit repair pass BEFORE any
+  // built-in generator is allowed to run.
+  if(all.length!==TQ_N){
+    const repairPrompt=prompt+`\n\nRECOVERY PASS — YOUR PREVIOUS RESPONSE WAS INCOMPLETE OR INVALID.\nRegenerate the COMPLETE ${TQ_N}-question JSON in one response.\nDo not omit any category. Count every question before returning.\nReturn ONLY the JSON object.`;
+    result=await aiJson(repairPrompt,{bypassCache:true});
+    all=validQuestions(result,TQ_N)||[];
+  }
+
   const out={};
   const sources={};
 
@@ -1079,7 +1096,7 @@ function anchorRealityHTML(x){
   if(!x)return '<p class="muted small">No live research has been run yet.</p>';
   const list=v=>Array.isArray(v)&&v.length?`<ul>${v.map(i=>`<li>${esc(String(i))}</li>`).join('')}</ul>`:'';
   const sources=Array.isArray(x.sources)?x.sources:[];
-  const sourceHTML=sources.length?`<h3>Sources used</h3><ol>${sources.map(s=>{const t=esc(s.title||s.name||s.url||'Source'),u=String(s.url||'');return u?`<li><a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${t}</a></li>`:`<li>${t}</li>`}).join('')}</ol>`:'';
+  const sourceHTML=sources.length?`<h3>Sources used</h3><ol>${sources.map(s=>{const t=esc(s.title||s.name||s.url||'Source'),u=String(s.url||''),sn=String(s.snippet||'').trim();return `<li>${u?`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${t}</a>`:`${t}`}${sn?`<div class="muted small" style="margin:4px 0 8px">${esc(sn)}</div>`:''}</li>`}).join('')}</ol>`:'';
   return`${x.career?`<h3>${esc(x.career)}</h3>`:''}
     ${x.what_it_involves?`<h3>What the role involves</h3><p>${esc(x.what_it_involves)}</p>`:''}
     ${x.pros?`<h3>Pros</h3>${list(x.pros)}`:''}
@@ -1487,8 +1504,12 @@ async function requestCommonGroundAI(){
     const an=analyse(s);
     const careers=CAREERS.map(c=>({name:c.n,profile:c.c,keywords:c.kw,market:c.mkt,pros:c.pros,cons:c.cons,alternatives:c.alt}));
     const prompt=`You are CareerMitra's strict Common Ground decision-support analyst.\n\nYour job is NOT to make generic career suggestions. Select up to 3 careers only after comparing BOTH sides.\n\nSTUDENT TEST ANALYSIS:\n${JSON.stringify({personalityType:an.type,personalityShare:an.share,rankedCareers:an.roles.slice(0,8).map(r=>({name:r.n,rank:r.rank,fitEvidence:r.strong,watchouts:r.watch})),vault:{interests:s.vault.interests,hobbies:s.vault.hobbies,likings:s.vault.likings,strongSubjects:subjNames(s.vault),skills:skillNames(s.vault),preferredRoles:roleNames(s.vault),field:s.vault.field,nonNegotiable:s.vault.nonnegotiable,alternatives:s.vault.alternatives}})}\n\nACCEPTED FAMILY CONCERNS (use the actual answers, not assumptions):\n${JSON.stringify(acceptedConcerns)}\n\nCAREER CANDIDATES:\n${JSON.stringify(careers)}\n\nSTRICT RULES:\n1. A career must have evidence of student fit AND evidence addressing at least one real family concern.\n2. Never claim a family concern is satisfied unless the career data actually supports it.\n3. If a career conflicts with an important concern, record the conflict. Do not hide it.\n4. Do not select a career merely because it is popular, high-paying, or already the non-negotiable career.\n5. The student's non-negotiable career must remain visible separately; it may be selected only if BOTH sides support it.\n6. Use the student's Test Zone pattern, not just their typed preference.\n7. Use the parent's actual wording as evidence.\n8. If fewer than 3 careers genuinely satisfy both sides, return fewer than 3. NEVER fill the list with weak or invented matches.\n9. Return only JSON.\n\nFORMAT:\n{"picks":[{"career":"exact candidate name","studentEvidence":["..."],"familyEvidence":["..."],"conflicts":["..."],"fit":"Strong|Moderate","reason":"short explanation"}]}`;
-    const ai=await aiJson(prompt);
-    const picks=Array.isArray(ai&&ai.picks)?ai.picks.filter(x=>x&&typeof x.career==='string').slice(0,3):[];
+    let ai=await aiJson(prompt);
+    let picks=Array.isArray(ai&&ai.picks)?ai.picks.filter(x=>x&&typeof x.career==='string').slice(0,3):[];
+    if(!picks.length){
+      ai=await aiJson(prompt+`\n\nRECOVERY PASS: Re-evaluate the evidence-gated candidates. Return up to 3 genuine common-ground careers only. If the evidence does not support 3, return fewer. JSON only.`,{bypassCache:true});
+      picks=Array.isArray(ai&&ai.picks)?ai.picks.filter(x=>x&&typeof x.career==='string').slice(0,3):[];
+    }
     if(picks.length){s.commonGroundAI={key,picks,createdAt:Date.now()};save();}
     delete s.commonGroundAIPending;
     if(S.view==='score')render(true);
@@ -1779,8 +1800,14 @@ function rate(status){
 async function genFQ(){
   const f=fam(),s=linkedStudent(),an=analyse(s);S.fq='loading';render();
   const roles=an.roles.slice(0,4).map(r=>r.n).join(', ');
-  const r=await aiJson(`You help a family resolve disagreement about a student's career. The student prefers: ${roleNames(s.vault).join(', ')}; their most loved non-negotiable career is ${s.vault.nonnegotiable||'not specified'} (field: ${s.vault.field}; reason: ${s.vault.whyField}). Suggested roles from the test: ${roles}. The parent is unsatisfied. Write exactly 25 short, respectful, open-ended, all-different questions for the parent covering these themes (several questions each, from different angles): what they want for their child, preferred stream and why, why not the child's choice, what worries them, financial considerations, why they want the child to not pursue the interest and choose theirs, salary worries about the child's goal/role, respect or "what will people say" worries, and future scope of the role; also their dreams for the child, stream preference, loans/debt, job security, community reaction, living away from home, whether they have discussed it with the child, alternatives they'd accept, government-vs-private job preference, and what proof would convince them. Return ONLY JSON: {"questions":["..."]}`);
-  const base=r&&Array.isArray(r.questions)?r.questions.map(String).filter(x=>x.trim().length>10):[],loc=FQ_LOCAL(roles);
+  const familyPrompt=`You help a family resolve disagreement about a student's career. The student prefers: ${roleNames(s.vault).join(', ')}; their most loved non-negotiable career is ${s.vault.nonnegotiable||'not specified'} (field: ${s.vault.field}; reason: ${s.vault.whyField}). Suggested roles from the test: ${roles}. The parent is unsatisfied. Write exactly 25 short, respectful, open-ended, all-different questions for the parent covering these themes (several questions each, from different angles): what they want for their child, preferred stream and why, why not the child's choice, what worries them, financial considerations, why they want the child to not pursue the interest and choose theirs, salary worries about the child's goal/role, respect or "what will people say" worries, and future scope of the role; also their dreams for the child, stream preference, loans/debt, job security, community reaction, living away from home, whether they have discussed it with the child, alternatives they'd accept, government-vs-private job preference, and what proof would convince them. Return ONLY JSON: {"questions":["..."]}`;
+  let r=await aiJson(familyPrompt);
+  let base=r&&Array.isArray(r.questions)?r.questions.map(String).filter(x=>x.trim().length>10):[];
+  if(base.length<25){
+    r=await aiJson(familyPrompt+`\n\nRECOVERY PASS: The previous AI response contained fewer than 25 valid questions. Generate all 25 again. Return ONLY {"questions":[...]} with exactly 25 genuinely different questions.`,{bypassCache:true});
+    base=r&&Array.isArray(r.questions)?r.questions.map(String).filter(x=>x.trim().length>10):[];
+  }
+  const loc=FQ_LOCAL(roles);
   f.questions=base.length>=20?[...base,...loc.filter(x=>!base.includes(x))].slice(0,FQ_N):loc;
   touch(f);save();S.fq=null;render();
 }
@@ -1792,7 +1819,11 @@ async function submitAnswers(d){
   const res=items.map((it,i)=>({...it,keep:!!(prev(it.q)&&prev(it.q).a===it.a),note:localGenuine(it.a,items.filter((_,j)=>j!==i).map(x=>x.a))}));
   const pass=res.filter(r=>!r.note&&!r.keep);
   if(pass.length){
-    const j=await aiJson(`Judge whether each parent's answer is a sincere, specific, relevant response to its question (reject gibberish, off-topic, trolling, or copy-pasted filler; short but honest answers are fine). Return ONLY JSON {"results":[{"ok":true|false,"reason":"short, kind reason if not ok"}]} in the same order (${pass.length} items): ${JSON.stringify(pass.map(p=>({q:p.q,a:p.a})))}`);
+    const judgePrompt=`Judge whether each parent's answer is a sincere, specific, relevant response to its question (reject gibberish, off-topic, trolling, or copy-pasted filler; short but honest answers are fine). Return ONLY JSON {"results":[{"ok":true|false,"reason":"short, kind reason if not ok"}]} in the same order (${pass.length} items): ${JSON.stringify(pass.map(p=>({q:p.q,a:p.a})))}`;
+    let j=await aiJson(judgePrompt);
+    if(!(j&&Array.isArray(j.results)&&j.results.length===pass.length)){
+      j=await aiJson(judgePrompt+`\n\nRECOVERY PASS: Return exactly ${pass.length} results in exactly the same order. Do not omit any item. JSON only.`,{bypassCache:true});
+    }
     if(j&&Array.isArray(j.results)&&j.results.length===pass.length)pass.forEach((p,i)=>{if(j.results[i]&&j.results[i].ok===false)p.note=j.results[i].reason||'This answer doesn’t seem to address the question. Please try again.'});
   }
   f.qa=res.map(r=>({q:r.q,a:r.a,accepted:r.keep?true:!r.note,note:r.keep?'':(r.note||'')}));touch(f);save();S.busy=false;
