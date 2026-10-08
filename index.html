@@ -229,23 +229,20 @@ async function aiJson(prompt,opts={}){
       const wait=Math.max(0,CM_AI_NEXT_AT-Date.now(),CM_AI_COOLDOWN_UNTIL-Date.now());
       if(wait)await cmSleep(wait);
       CM_AI_NEXT_AT=Date.now()+450;
-      let r=null,data=null;
-      for(let tryNo=0;tryNo<3;tryNo++){
-        r=await fetch('/api/ai',{
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({prompt,webSearch,career:opts.career||'',purpose:isTest?'student test generation':''})
-        });
-        data=await r.json().catch(()=>null);
-        if(r.ok)break;
-        // Busy (429) or temporary (502/503/504): wait politely and try again.
-        if([429,502,503,504].includes(r.status)&&tryNo<2){
-          const rs=Number(data&&data.retryAfter)||0;
-          await cmSleep(Math.max(3000,Math.min(15000,(rs||5)*1000)));
-          continue;
-        }
-        break;
-      }
+      const r=await fetch('/api/ai',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          prompt,
+          webSearch,
+          career:opts.career||'',
+          purpose:isTest?'student test generation':'',
+          testZone:isTest,
+          vault:opts.vault||null,
+          stage:opts.stage||''
+        })
+      });
+      const data=await r.json().catch(()=>null);
       if(!r.ok){
         const retrySec=Number(data&&data.retryAfter)||0;
         if(r.status===429)CM_AI_COOLDOWN_UNTIL=Date.now()+Math.max(5000,Math.min(30000,retrySec*1000||8000));
@@ -653,8 +650,8 @@ function validQuestions(r,count){
 }
 function questionQualityIssues(qs,v){
   const issues=[];
-  const moral=/\b(good person|bad person|smart person|lazy|irresponsible|should choose|must choose|right career|wrong career|only sensible|guaranteed|perfect career)\b/i;
-  const leading=/\b(obviously|of course|definitely|only sensible|dream career|guaranteed)\b/i;
+  const moral=/\b(best|better|worse|good person|bad person|smart person|lazy|responsible person|irresponsible|should choose|must choose|right career|wrong career|safe choice|only sensible|guaranteed|perfect career)\b/i;
+  const leading=/\b(obviously|clearly|of course|definitely|only sensible|dream career|guaranteed|always|never)\b/i;
   const absurd=/\b(do nothing|whatever|i don't care|i dont care|give up immediately|quit everything|sleep all day|ignore it completely)\b/i;
   const seenQ=new Set();
   const namedRoles=[...roleNames(v),v&&v.nonnegotiable,v&&v.field,...arr(v&&v.alternatives)].filter(Boolean).map(x=>String(x).trim().toLowerCase()).filter(x=>x.length>=4);
@@ -759,14 +756,6 @@ TRAIT MAPPING
 For non-factual questions, each of the four options must have a different internal Holland code from R,I,A,S,E,C. The code is hidden from the student. Rotate which code appears first and do not repeatedly make one code sound better.
 For factual reasoning/knowledge questions, use exactly one correct:true and three plausible, topic-relevant distractors. No nonsense distractors.
 
-EXTRA NEUTRALITY RULES
-- Write like a kind teacher: short sentences, everyday words, polite tone.
-- Each question uses a DIFFERENT Vault item. Mention the item naturally in the question and copy it exactly into basedOn.
-- Within one question, all four options must start in a similar way, have similar length, and describe things a real student might do or feel.
-- Never make an option about money, status or pressure unless the question itself is about that topic.
-- "cat" must be exactly one of: Personality, Situation reaction, Interests & likings, Basic intelligence, Strong subject / skills, Career opinion.
-- basedOn for Personality, Situation reaction and Basic intelligence may be "General".
-
 SELF-AUDIT BEFORE RETURNING
 For every question check: “Could a student reasonably choose any option without being pushed toward a particular career, personality type or socially desirable answer?” If not, rewrite it.
 Also check: exact Vault grounding where required; four distinct plausible options; comparable option length; no repeated stems; no unsupported personal facts; correct answer only for factual questions.
@@ -790,30 +779,31 @@ async function makeQuestions(s){
   const stage=STAGES[s.stage]?STAGES[s.stage].t+' — '+STAGES[s.stage].d:'student';
   S.tload=0;window.CM_TEST_AI_SOURCES={};
   const prompt=buildTestPrompt(vault,stage);
-  let result=await aiJson(prompt);
+  let result=await aiJson(prompt,{
+    purpose:'student test generation',
+    testZone:true,
+    bypassCache:true,
+    vault,
+    stage
+  });
   let all=validQuestions(result,TQ_N)||[];
   let issues=all.length===TQ_N?questionQualityIssues(all,v):['AI response was incomplete or structurally invalid.'];
 
-  // AI is the primary generator. If the first draft fails the neutrality / Vault-grounding
-  // checks (or the AI was busy), we ask the AI again, telling it exactly what to fix.
-  // Up to two repair passes. The queue in aiJson() already waits politely if the AI is busy.
-  for(let pass=0;pass<2&&(all.length!==TQ_N||issues.length>2);pass++){
+  // AI remains the primary generator. A second AI pass is used only when the first
+  // response fails the structural/neutrality/Vault-grounding gate.
+  if((all.length!==TQ_N||issues.length) && !/429|rate limit|rate_limit|quota/i.test(window.CM_AI_ERROR||'')){
     const repairPrompt=prompt+`
 
 QUALITY AUDIT FAILED
 The previous response did not pass these checks:
 ${issues.slice(0,40).join('\n')}
-Generate the COMPLETE test again (all ${TQ_N} questions, exact category counts). Keep every question neutral, simple, natural and grounded in the student's actual Vault items. Every option must be a realistic answer; none may sound clearly better or worse. Do not defend the previous draft. Return ONLY JSON.`;
+Generate the COMPLETE test again. Keep every question neutral, natural and grounded in the student's actual Vault. Do not defend the previous draft. Return ONLY JSON.`;
     result=await aiJson(repairPrompt,{bypassCache:true,purpose:'student test generation'});
-    const next=validQuestions(result,TQ_N)||[];
-    if(next.length===TQ_N){
-      const nextIssues=questionQualityIssues(next,v);
-      if(all.length!==TQ_N||nextIssues.length<=issues.length){all=next;issues=nextIssues}
-    }
+    all=validQuestions(result,TQ_N)||[];
+    issues=all.length===TQ_N?questionQualityIssues(all,v):['AI repair was incomplete or invalid.'];
   }
 
-  // A small number of wording flags is accepted (they are soft checks); structure must be perfect.
-  if(all.length===TQ_N && issues.length<=2){
+  if(all.length===TQ_N && !issues.length){
     const q=all.map(x=>({...x,cat:String(x.cat).trim()}));
     const sources={};TQ_PLAN.forEach(([cat])=>sources[cat]='ai');
     window.CM_TEST_AI_SOURCES=sources;
@@ -1287,7 +1277,6 @@ function anchorRealityHTML(x){
     ${x.rewards_beyond_money?`<h3>Rewards beyond money</h3>${list(x.rewards_beyond_money)}`:''}
     ${x.public_discussion_themes?`<h3>Public internet discussion themes</h3><p class="muted small">Anecdotal themes from public discussions; these are not representative survey data.</p>${list(x.public_discussion_themes)}`:''}
     ${sourceHTML}
-    ${x.note?`<div class="note warn">${esc(x.note)}</div>`:''}
     ${x.researched_at?`<p class="muted small">Research time: ${esc(x.researched_at)}</p>`:''}`;
 }
 
@@ -1809,7 +1798,6 @@ async function startTest(){
     return;
   }
   S.tq={q:r.q,a:Array(TQ_N).fill(null),i:0,src:r.src||'ai',sources:r.sources||window.CM_TEST_AI_SOURCES||{}};S.tstate='running';persistDraft();render();
-  if(r.src==='fallback')toast('The AI was busy, so a simpler backup test was used. You can retake it later for fully personalised questions.');
 }
 function localTestAnalysis(tally,reasoning,v){
   const order=[...LET].sort((a,b)=>(tally[b]||0)-(tally[a]||0));
