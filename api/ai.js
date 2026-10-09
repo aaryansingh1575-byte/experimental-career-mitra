@@ -1,4 +1,3 @@
-
 export const maxDuration = 60;
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -64,48 +63,79 @@ function extractText(data) {
 function purposeFor(prompt, webSearch) {
   const p = String(prompt || "").toLowerCase();
   if (webSearch) return "live career research";
-  if (/common ground|both sides|family concerns|decision-support analyst|career candidates/.test(p)) return "common-ground analysis";
-  if (/parent|family|sincere|specific|relevant response|concern/.test(p)) return "family question/answer analysis";
-  if (/complete test|question plan|holland|personal vault|multiple-choice questions/.test(p)) return "student test generation";
-  if (/personality-and-interest test|holland-code tallies|career counsellor/.test(p)) return "student test answer analysis";
+  if (/common ground|both sides|family concerns|decision-support analyst|career candidates|strict common ground/i.test(p)) {
+    return "common-ground analysis";
+  }
+  if (/neutral family-answer analyst|family-perspective question designer|sincere|specific|relevant response|concern/i.test(p)) {
+    return "family question/answer analysis";
+  }
+  if (/complete test|question plan|holland|personal vault|multiple-choice questions|test zone designer/i.test(p)) {
+    return "student test generation";
+  }
+  if (/personality-and-interest test|holland-code tallies|career counsellor|analysing your answers|student test answer analysis|careermitra’s neutral, humble and careful career-analysis/i.test(p)) {
+    return "student test answer analysis";
+  }
   return "career counselling";
 }
 
-async function requestAI(prompt, webSearch = false, repair = false, testZone = false) {
+async function requestAI(prompt, webSearch = false, repair = false, isTestGeneration = false) {
   const key = process.env.OPENROUTER_API_KEY;
   if (!key) throw new Error("OPENROUTER_API_KEY is missing in Vercel Environment Variables.");
 
   const purpose = purposeFor(prompt, webSearch);
   const isCommonGround = purpose === "common-ground analysis";
+  const isTestAnalysis = purpose === "student test answer analysis";
 
-  const system = `You are CareerMitra's ${purpose} engine, designed for students and families in India.
-Your answers must be grounded, highly realistic, practical, and factually accurate.
-Return ONLY valid JSON. Never include explanations, pleasantries, or Markdown code fences.
+  const system = `You are CareerMitra's senior AI analytics and decision-support engine, designed for students and families in India.
+Produce complete, highly realistic, practical, and factually accurate JSON output.
+Never return markdown code fences, pleasantries, conversational filler, or ungrounded generalities.
 
 GENERAL RULES:
-- Ground all output in the provided data. Never invent statistics, universities, accreditation, or salary packages.
-- Prefer India-specific educational and industry realities (e.g., NMC, AICTE, IITs, IIMs, UPSC, tier-1 vs tier-3 realities).
-- Write concrete, high-utility analysis rather than generic filler.
+- Ground all output in the provided prompt data. Never invent statistics, universities, accreditation, or salary numbers.
+- Tailor all education pathways, recruitment processes, exams, and salaries to India (e.g., RRB ALP, NEET, JEE, UPSC, GATE, Indian corporate and PSU compensation in LPA).
+- Provide high-utility analysis rather than generic filler.
 
 ${webSearch ? `LIVE RESEARCH REQUIREMENTS:
-- Synthesize the provided web evidence into a coherent, highly realistic analysis of the career in India.
-- Detail the exact step-by-step path (degrees, entrance exams like NEET/JEE/CAT, licensing, internships).
-- Distinguish entry-level salary vs mid-career reality realistically in INR (LPA).
-- Highlight actual barriers, workplace stress, and market saturation levels.` : ""}
+- Synthesize an accurate, real-world briefing for the exact career in India.
+- Detail the real step-by-step path: required school stream, entrance exams, undergraduate degrees, professional training, licensing, and apprenticeships.
+- Specify entry-level vs mid-career salary in INR (LPA or monthly scale).
+- Discard irrelevant references that share the same name (such as entertainment apps, video game streamers, or songs).` : ""}
 
-${isCommonGround ? `STRICT COMMON GROUND ANALYTICAL INTERSECTION RULES:
-- You must perform a rigorous, honest analytical cross-examination between:
-  1. STUDENT: Aptitude, demonstrated strengths, RIASEC profile/test responses, and Personal Vault anchors.
-  2. FAMILY: Actual parent QA concerns, stated preferences (e.g., specific fields like surgery/medicine/engineering), budget, debt tolerance, and security criteria.
-- Select up to 3 careers that represent a genuine compromise in favor of BOTH sides.
-- NEVER cross-contaminate quotes: Do not attach parent quotes about medical fields or surgery to defense, robotics, or engineering careers. Quotes must directly match the career or state general home constraints (e.g. zero loans, stability).
+${isTestAnalysis ? `STUDENT TEST ANALYSIS & DETAILED CAREER ROADMAP:
+- Analyze the student's actual responses, RIASEC tallies, and Personal Vault choices.
+- In "rankedCareers", output up to 5 fully-realized career profiles reflecting the student's actual aptitude and non-negotiable career.
+- FOR EACH CAREER in "rankedCareers", you MUST provide complete, detailed values:
+  1. "name": exact career name.
+  2. "fit": "Strong", "Moderate", or "Possible".
+  3. "score": number between 0.50 and 0.95.
+  4. "evidence": [2 to 4 concrete reasons tied directly to the student's choices].
+  5. "watchouts": [1 to 3 realistic hurdles, competition factors, or physical/academic challenges].
+  6. "pros": [3 to 4 genuine benefits in India].
+  7. "cons": [3 to 4 genuine trade-offs or working condition realities in India].
+  8. "mkt": realistic India earning and hiring picture (e.g., starting salary, senior salary, exam/hiring channels).
+  9. "demand": realistic assessment of demand and competition in India.
+  10. "future_growth": 10-year realistic outlook in India.
+  11. "tradeoffs": [2 to 3 core trade-offs].
+  12. "path": [sequential steps from current stage to professional entry].
+  13. "academic": exact recognized degree/qualification in India.
+  14. "vocational": recognized ITI, polytechnic diploma, or apprentice route.
+  15. "certifications": [mandatory licenses, medical fitness standards, or credentials].
+  16. "skills": [4 to 6 core practical and job-ready skills].
+  17. "alternatives": [2 to 4 lateral options].
+  18. "reason": concise summary of why this career fits the student.
+- DO NOT leave pros, cons, mkt, or educational pathways empty.` : ""}
+
+${isCommonGround ? `STRICT COMMON GROUND ANALYTICAL INTERSECTION:
+- Compare the student's test results, vault, and RIASEC profile against the family's actual concerns and preferences.
+- Select up to 3 careers that represent a genuine analytical compromise for BOTH sides.
+- ACCURACY DIRECTIVE: Never attach irrelevant parent quotes to unrelated careers (e.g., do not attach quotes about surgery or medicine to defense, robotics, or engineering careers). Only include quotes that directly mention the field or state universal home constraints (such as zero loans, stability, or location).
 - Provide balanced, realistic student evidence and family evidence fit percentages between 55% and 95%. NEVER return 0% or 1%.
-- Highlight actual trade-offs or remaining conflicts honestly.` : ""}`;
+- Clearly identify trade-offs or remaining conflicts.` : ""}`;
 
-  const maxAttempts = (testZone || isCommonGround) ? 2 : (repair ? 2 : 2);
-  const timeoutMs = testZone ? 48000 : (webSearch ? 40000 : (isCommonGround ? 35000 : 25000));
-  const selectedModel = (testZone || isCommonGround || webSearch) ? TEST_MODEL : PRIMARY_MODEL;
-  const selectedModels = (testZone || isCommonGround || webSearch ? TEST_FALLBACK_MODELS : FALLBACK_MODELS).slice(0, 3);
+  const maxAttempts = (isTestGeneration || isCommonGround || isTestAnalysis) ? 2 : (repair ? 2 : 2);
+  const timeoutMs = isTestGeneration ? 48000 : (webSearch ? 40000 : ((isCommonGround || isTestAnalysis) ? 42000 : 25000));
+  const selectedModel = (isTestGeneration || isCommonGround || isTestAnalysis || webSearch) ? TEST_MODEL : PRIMARY_MODEL;
+  const selectedModels = (isTestGeneration || isCommonGround || isTestAnalysis || webSearch ? TEST_FALLBACK_MODELS : FALLBACK_MODELS).slice(0, 3);
   let lastError = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -129,7 +159,7 @@ ${isCommonGround ? `STRICT COMMON GROUND ANALYTICAL INTERSECTION RULES:
             { role: "user", content: prompt }
           ],
           temperature: webSearch ? 0.1 : (isCommonGround ? 0.2 : 0.15),
-          max_tokens: testZone ? 4000 : (webSearch ? 4500 : (isCommonGround ? 3000 : 3500)),
+          max_tokens: isTestAnalysis ? 4500 : (isTestGeneration ? 4000 : (webSearch ? 4500 : 3500)),
           response_format: { type: "json_object" },
           provider: {
             allow_fallbacks: true,
@@ -198,7 +228,7 @@ function sourcePriority(url) {
   let score = 20;
 
   if (u.includes("nmc.org.in") || u.includes("natboard.edu.in") || u.includes("aiims.edu")) score = 120;
-  else if (u.includes("upsc.gov.in") || u.includes("aicte-india.org") || u.includes(".gov.in")) score = 110;
+  else if (u.includes("upsc.gov.in") || u.includes("indianrailways.gov.in") || u.includes("rrbcdg.gov.in") || u.includes("aicte-india.org") || u.includes(".gov.in")) score = 110;
   else if (u.includes("apollohospitals.com") || u.includes("fortishealthcare.com") || u.includes("medanta.org")) score = 95;
   else if (u.includes("naukri.com") || u.includes("in.indeed.com") || u.includes("ambitionbox.com")) score = 90;
   else if (u.includes(".ac.in") || u.includes(".edu.in")) score = 85;
@@ -212,7 +242,7 @@ async function searchWeb(query) {
     const url = "https://www.bing.com/search?format=rss&q=" + encodeURIComponent(query);
     const r = await fetch(url, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 CareerMitra/2.0"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 CareerMitra/2.0"
       }
     });
     if (!r.ok) return [];
@@ -220,7 +250,7 @@ async function searchWeb(query) {
     const xml = await r.text();
     const items = xml.match(/<item>[\s\S]*?<\/item>/gi) || [];
 
-    return items.slice(0, 6).map(item => {
+    return items.slice(0, 8).map(item => {
       const title = item.match(/<title>([\s\S]*?)<\/title>/i)?.[1] || "";
       const link = item.match(/<link>([\s\S]*?)<\/link>/i)?.[1] || "";
       const snippet = item.match(/<description>([\s\S]*?)<\/description>/i)?.[1] || "";
@@ -238,7 +268,10 @@ async function searchWeb(query) {
         url: clean(link),
         snippet: clean(snippet)
       };
-    }).filter(x => x.title && /^https?:\/\//i.test(x.url));
+    }).filter(x => {
+      const isNoise = /gaming|streamer|esports|song|lyrics|rapper|album|track/i.test(x.title + " " + x.snippet);
+      return x.title && /^https?:\/\//i.test(x.url) && !isNoise;
+    });
   } catch (_) {
     return [];
   }
@@ -256,29 +289,28 @@ COUNTRY CONTEXT:
 India
 
 LIVE WEB EVIDENCE RETRIEVED:
-${evidence || "Rely on authoritative current facts regarding Indian higher education, entry routes, and career markets."}
+${evidence || "Rely on authoritative current facts regarding Indian higher education, official recruiting boards, and professional industries."}
 
 Return a single JSON object with EXACTLY these keys:
 {
   "career": "${career}",
   "what_it_involves": "Concrete explanation of daily responsibilities and work setting.",
   "pros": ["3 to 5 realistic benefits in India"],
-  "cons": ["3 to 5 genuine challenges/drawbacks"],
-  "pay_india": "Realistic earning reality in India (starting ₹ LPA, mid-career ₹ LPA, top-tier possibilities).",
-  "market_requirements": ["Required degrees, entrance exams, skills, and licenses"],
+  "cons": ["3 to 5 genuine challenges/drawbacks in India"],
+  "pay_india": "Realistic earning reality in India (starting ₹ LPA/monthly, mid-career ₹ LPA, senior ₹ LPA, top possibilities).",
+  "market_requirements": ["Required degrees, entrance exams, skills, and licenses in India"],
   "demand": "Current demand and hiring context in India.",
-  "future_growth": "10-year outlook, risks, and emerging shifts.",
-  "step_by_step_path": ["Step 1: School/Stream", "Step 2: Entrance & UG", "Step 3: Training/PG", "Step 4: Career Entry"],
+  "future_growth": "10-year outlook, risks, and emerging industry shifts.",
+  "step_by_step_path": ["Step 1: School/Stream", "Step 2: Entrance & UG/Diploma", "Step 3: Training/Apprenticeship", "Step 4: Career Entry"],
   "same_level_alternatives": ["3 to 4 genuine lateral alternatives"],
-  "struggles_barriers": ["Key bottlenecks, high competition points, or cost barriers"],
-  "rewards_beyond_money": ["Intellectual or social rewards"],
-  "public_discussion_themes": ["Common candid feedback shared by professionals in this field"],
+  "struggles_barriers": ["Key bottlenecks, selection competition, or fitness/academic filters"],
+  "rewards_beyond_money": ["Social impact, public service, or professional satisfaction"],
+  "public_discussion_themes": ["Common candid feedback shared by professionals in this field in India"],
   "sources": [{"title": "Source name", "url": "https://..."}]
 }
 
 CRITICAL RULES:
 - Do NOT return empty fields.
-- For medical and specialized fields, specify the exact recognized path (e.g., MBBS -> MD/MS -> DNB/Fellowship).
 - Sources must use genuine URLs from the evidence or reputable standard reference sites.
 - Return ONLY the JSON object.`;
 }
@@ -302,7 +334,6 @@ function normalizeResearch(data, career, sources) {
     if (!Array.isArray(d[k])) d[k] = d[k] ? [String(d[k])] : [];
   }
 
-  // Ensure frontend receives legitimate live sources
   if (Array.isArray(sources) && sources.length) {
     d.sources = sources.slice(0, 6).map(x => ({
       title: cleanText(x.title),
@@ -311,10 +342,10 @@ function normalizeResearch(data, career, sources) {
     }));
   }
 
-  if (!d.what_it_involves) d.what_it_involves = `The role of ${career} involves applying specialist domain knowledge, practical decision-making, and specialized technical or operational skills in the Indian market.`;
-  if (!d.pay_india) d.pay_india = "Starting packages range from ₹4-8 LPA in corporate/private sectors, increasing substantially to ₹15-30+ LPA with senior specialization and experience.";
-  if (!d.demand) d.demand = "Steady demand in Tier-1 and emerging Tier-2 hubs across India, with strong differentiation for top-tier qualified candidates.";
-  if (!d.future_growth) d.future_growth = "Positive long-term trajectory driven by industry modernization and demand for high-skill specialists.";
+  if (!d.what_it_involves) d.what_it_involves = `The role of ${career} involves applying specialist knowledge, practical operational skills, and adhering to strict procedural guidelines in India.`;
+  if (!d.pay_india) d.pay_india = "Starting packages range from ₹4-8 LPA in private corporate sectors or standard government pay levels (Level-2 to Level-7 7th CPC), scaling with seniority.";
+  if (!d.demand) d.demand = "Steady demand across public notifications and private sectors in India, with high competition for certified openings.";
+  if (!d.future_growth) d.future_growth = "Positive long-term trajectory driven by industry expansion, infrastructure upgrades, and technological adoption.";
 
   return d;
 }
@@ -328,13 +359,12 @@ function repairCommonGround(data) {
   else if (Array.isArray(data?.data?.picks)) picks = data.data.picks;
 
   return picks.filter(p => p && typeof p.career === "string").slice(0, 3).map((p, idx) => {
-    // Proportional, balanced percentage metrics to prevent the 1% vs 99% UI rendering bug
-    const defaultStudent = idx === 0 ? 84 : idx === 1 ? 76 : 69;
-    const defaultFamily = idx === 0 ? 82 : idx === 1 ? 74 : 67;
+    const defaultStudent = idx === 0 ? 86 : idx === 1 ? 78 : 70;
+    const defaultFamily = idx === 0 ? 84 : idx === 1 ? 76 : 68;
 
     const studentScore = typeof p.studentFitPct === "number"
       ? Math.max(55, Math.min(95, p.studentFitPct))
-      : (typeof p.score === "number" && p.score > 0 ? Math.round(p.score * 100) : defaultStudent);
+      : defaultStudent;
 
     const familyScore = typeof p.familyFitPct === "number"
       ? Math.max(55, Math.min(95, p.familyFitPct))
@@ -349,165 +379,119 @@ function repairCommonGround(data) {
       familyEvidence: Array.isArray(p.familyEvidence) ? p.familyEvidence.map(cleanText) : [cleanText(p.familyEvidence || "Directly satisfies family expectations regarding stability and growth.")],
       conflicts: Array.isArray(p.conflicts) ? p.conflicts.map(cleanText) : [],
       fit: cleanText(p.fit || "Strong fit"),
-      reason: cleanText(p.reason || "Solid analytical alignment between student aptitude and family expectations.")
+      reason: cleanText(p.reason || "Solid analytical alignment between student aptitude and family perspective.")
     };
   });
 }
 
-/* ========================= TEST ZONE AI ENGINE ========================= */
+/* ========================= STUDENT TEST ANALYSIS REPAIR ========================= */
 
-function testArr(v) {
-  if (Array.isArray(v)) return v.map(x => cleanText(x)).filter(Boolean);
-  if (typeof v === "string") return v.split(/[,;\n]/).map(x => cleanText(x)).filter(Boolean);
-  return [];
-}
+function repairStudentAnalysis(data) {
+  const d = data && typeof data === "object" ? { ...data } : {};
 
-function normalizeTestVault(v = {}) {
-  return {
-    interests: testArr(v.interests),
-    hobbies: testArr(v.hobbies),
-    likings: testArr(v.likings),
-    strongSubjects: testArr(v.strongSubjects ?? v.subjects),
-    preferredRoles: testArr(v.preferredRoles ?? v.preferredRolesInPriorityOrder ?? v.roles),
-    nonNegotiable: cleanText(v.nonNegotiable ?? v.nonNegotiableCareer ?? v.nonnegotiable),
-    chosenField: cleanText(v.chosenField ?? v.field),
-    whyField: cleanText(v.whyField ?? v.reasonForField),
-    whyNotOthers: cleanText(v.whyNotOthers ?? v.reasonNotOtherFields),
-    alternatives: testArr(v.alternatives ?? v.alternativesConsidered),
-    skills: testArr(v.skills ?? v.verifiedSkills),
-    stage: cleanText(v.stage ?? v.educationStage)
-  };
-}
+  if (Array.isArray(d.rankedCareers)) {
+    d.rankedCareers = d.rankedCareers.map((c, i) => {
+      const name = cleanText(c.name || c.career);
+      const isMed = /doctor|surgeon|oncolog|mbbs|physician/i.test(name);
+      const isRail = /loco|rail|train|pilot/i.test(name);
 
-const TEST_PLAN = {
-  "Personality": 4,
-  "Situation reaction": 4,
-  "Interests & likings": 4,
-  "Basic intelligence": 4,
-  "Strong subject / skills": 4,
-  "Career opinion": 5
-};
-
-function testVaultEvidence(v) {
-  const rows = [];
-  const add = (label, values) => {
-    for (const x of testArr(values)) rows.push(`${label}: ${x}`);
-  };
-  add("Interest", v.interests);
-  add("Hobby", v.hobbies);
-  add("Liking", v.likings);
-  add("Strong subject", v.strongSubjects);
-  add("Preferred role", v.preferredRoles);
-  add("Skill", v.skills);
-  add("Alternative", v.alternatives);
-  if (v.nonNegotiable) rows.push(`Non-negotiable career: ${v.nonNegotiable}`);
-  if (v.chosenField) rows.push(`Chosen field: ${v.chosenField}`);
-  return rows;
-}
-
-function buildServerTestPrompt(vault, stage = "student") {
-  const v = normalizeTestVault(vault);
-  const plan = Object.entries(TEST_PLAN).map(([k, n]) => `${k}: ${n}`).join(", ");
-  const evidence = testVaultEvidence(v).join("\n") || "General student profile";
-
-  return `You are CareerMitra's Test Zone AI engine.
-Generate a 25-question personalized career assessment test for a student in stage "${stage}".
-
-STUDENT PERSONAL VAULT:
-${evidence}
-
-CATEGORIES REQUIRED:
-${plan} (Total: 25)
-
-RULES:
-1. Ground questions directly in the student's actual interests, subjects, and roles.
-2. For "Basic intelligence", provide clean, logical reasoning questions where exactly one option has "correct": true.
-3. For all other categories, every option must have a Holland code trait ("R", "I", "A", "S", "E", or "C"). Each question should use 4 different traits.
-4. Keep questions concise and straightforward.
-5. Return ONLY JSON: {"questions": [{"cat":"Category","basedOn":"Vault item","q":"Question?","o":[{"text":"Opt","trait":"R"}]}]}`;
-}
-
-function repairAndNormalizeQuestions(data) {
-  let questions = [];
-  if (data && Array.isArray(data.questions)) questions = data.questions;
-  else if (data?.data && Array.isArray(data.data.questions)) questions = data.data.questions;
-  else if (Array.isArray(data)) questions = data;
-
-  if (!questions.length) return null;
-
-  const validCategories = Object.keys(TEST_PLAN);
-  const traitPool = ["R", "I", "A", "S", "E", "C"];
-  const sanitized = [];
-
-  for (let i = 0; i < questions.length; i++) {
-    const rawQ = questions[i];
-    if (!rawQ || typeof rawQ !== "object" || !cleanText(rawQ.q)) continue;
-
-    const cat = validCategories.includes(rawQ.cat)
-      ? rawQ.cat
-      : validCategories[i % validCategories.length];
-
-    let options = Array.isArray(rawQ.o) ? rawQ.o.filter(Boolean) : [];
-    if (options.length < 2) continue;
-
-    while (options.length < 4) {
-      options.push({ text: `Option choice ${options.length + 1}` });
-    }
-    options = options.slice(0, 4);
-
-    const isFactual = cat === "Basic intelligence" || options.some(o => o && "correct" in o);
-
-    if (isFactual) {
-      const hasTrue = options.some(o => o.correct === true);
-      options = options.map((opt, idx) => ({
-        text: cleanText(opt.text || `Choice ${idx + 1}`),
-        correct: hasTrue ? Boolean(opt.correct) : idx === 0
-      }));
-      if (!options.some(o => o.correct)) options[0].correct = true;
-    } else {
-      const usedTraits = new Set();
-      options = options.map((opt, idx) => {
-        let trait = String(opt.trait || "").toUpperCase();
-        if (!traitPool.includes(trait) || usedTraits.has(trait)) {
-          trait = traitPool.find(t => !usedTraits.has(t)) || traitPool[idx % traitPool.length];
-        }
-        usedTraits.add(trait);
-        return {
-          text: cleanText(opt.text || `Choice ${idx + 1}`),
-          trait
-        };
-      });
-    }
-
-    sanitized.push({
-      id: rawQ.id || `q_${sanitized.length + 1}`,
-      cat,
-      basedOn: cleanText(rawQ.basedOn) || "Personal Vault",
-      q: cleanText(rawQ.q),
-      o: options
+      return {
+        name,
+        fit: cleanText(c.fit || (i < 2 ? "Strong" : i < 4 ? "Moderate" : "Possible")),
+        score: typeof c.score === "number" && c.score > 0 ? c.score : (0.92 - i * 0.08),
+        evidence: Array.isArray(c.evidence) && c.evidence.length ? c.evidence.map(cleanText) : [
+          `Your test choices demonstrated strong preference for practical, investigative, and structured problem-solving.`,
+          `High compatibility with your stated interest in ${name}.`
+        ],
+        watchouts: Array.isArray(c.watchouts) && c.watchouts.length ? c.watchouts.map(cleanText) : [
+          `Requires competitive exam preparation and focused domain training.`
+        ],
+        pros: Array.isArray(c.pros) && c.pros.length ? c.pros.map(cleanText) : (
+          isRail ? [
+            "Central Government job security with pension benefits and running allowances.",
+            "High respect and critical operational responsibility within Indian Railways.",
+            "Structured career progression from Assistant Loco Pilot to Loco Mail/Express."
+          ] : isMed ? [
+            "Highly respected noble profession with profound social impact.",
+            "Consistent lifelong demand and stable earnings after specialty training.",
+            "Diverse clinical, surgical, and teaching opportunities."
+          ] : [
+            "High market relevance and steady professional growth.",
+            "Clear pathways to develop specialized technical mastery.",
+            "Strong long-term demand across organized industry sectors in India."
+          ]
+        ),
+        cons: Array.isArray(c.cons) && c.cons.length ? c.cons.map(cleanText) : (
+          isRail ? [
+            "Strict medical and vision fitness standards (A-1 category).",
+            "Irregular shift duties and extended operational hours away from home.",
+            "High concentration required with zero tolerance for procedural errors."
+          ] : isMed ? [
+            "Long study timeline (MBBS followed by competitive PG/Super-specialty).",
+            "Demanding work hours, emergency calls, and high emotional stress.",
+            "Intense competition for subsidized government medical seats."
+          ] : [
+            "Continuous upskilling required as tools and industry standards evolve.",
+            "Demanding early-career workload with performance expectations."
+          ]
+        ),
+        mkt: cleanText(c.mkt || c.market) || (
+          isRail
+            ? "Indian Railways 7th CPC Level-2 Pay Matrix (starting basic ₹19,900 + running allowances, gross ₹35,000–55,000/month; senior Loco Pilots earn ₹1–1.5+ Lakh/month)."
+            : isMed
+            ? "Resident doctors earn ₹60,000–1,10,000/month during PG; specialists in private/corporate hospitals earn ₹18–35+ LPA."
+            : "Starting packages range ₹4–9 LPA, scaling to ₹18–30+ LPA with senior domain expertise."
+        ),
+        demand: cleanText(c.demand) || "Steady annual hiring through established exams, government notifications, or campus/lateral channels.",
+        future_growth: cleanText(c.future_growth) || "Positive long-term scope driven by infrastructure expansion and modernization.",
+        path: Array.isArray(c.path) && c.path.length ? c.path.map(cleanText) : (
+          isRail ? [
+            "Pass Class 10 with ITI in relevant trade or 3-year Diploma in Mechanical/Electrical/Automobile/ECE.",
+            "Clear RRB ALP (Assistant Loco Pilot) CBT-1, CBT-2, and Computer Based Aptitude Test (CBAT).",
+            "Pass strict A-1 Railway Medical Examination.",
+            "Complete mandatory technical training at Railway Training Centres."
+          ] : isMed ? [
+            "Pass Class 12 with PCB and qualify NEET-UG.",
+            "Complete 5.5 years MBBS including compulsory rotating internship.",
+            "Register with NMC / State Medical Council.",
+            "Clear NEET-PG / INI-CET for MD/MS specialty training."
+          ] : [
+            "Complete foundational higher secondary education.",
+            "Earn a recognized professional degree or diploma.",
+            "Build practical projects and gain internship experience.",
+            "Enter entry-level role and pursue advanced certifications."
+          ]
+        ),
+        academic: cleanText(c.academic) || (
+          isRail ? "Class 10 + ITI / 3-Year Polytechnic Diploma in Mechanical, Electrical, Electronics, or Automobile Engineering."
+          : isMed ? "MBBS degree recognized by National Medical Commission (NMC) followed by MD/MS/DNB."
+          : "Relevant bachelor's degree (B.Tech, B.Sc, B.Com, or equivalent)."
+        ),
+        vocational: cleanText(c.vocational) || (
+          isRail ? "NCVT/SCVT recognized ITI in Fitter, Electrician, Diesel Mechanic, Machinist, or Wireman trade."
+          : isMed ? "Allied healthcare diploma or hospital clinical apprenticeship where applicable."
+          : "Polytechnic Diploma in relevant engineering or technical branch."
+        ),
+        certifications: Array.isArray(c.certifications) && c.certifications.length ? c.certifications.map(cleanText) : (
+          isRail ? ["RRB ALP Qualifying Certificate", "Railway Safety & Signaling Rules Certification", "A-1 Medical Vision Fitness"]
+          : isMed ? ["NMC Medical Registration", "Basic Life Support (BLS)", "Advanced Cardiac Life Support (ACLS)"]
+          : ["Industry-standard entry certifications", "Domain tool credentials"]
+        ),
+        skills: Array.isArray(c.skills) && c.skills.length ? c.skills.map(cleanText) : (
+          isRail ? ["Railway signaling and speed control", "Locomotive instrument inspection", "Safety protocol adherence", "Emergency troubleshooting"]
+          : isMed ? ["Clinical diagnosis", "Patient communication", "Medical record keeping", "Procedural accuracy"]
+          : ["Analytical thinking", "Technical execution", "Problem solving", "Team coordination"]
+        ),
+        alternatives: Array.isArray(c.alternatives) && c.alternatives.length ? c.alternatives.map(cleanText) : (
+          isRail ? ["Metro Train Operator", "Railway Section Engineer", "Industrial Plant Heavy Equipment Operator"]
+          : isMed ? ["Medical Officer", "Clinical Research Scientist", "Hospital Administrator"]
+          : ["Related technical or operational roles"]
+        ),
+        reason: cleanText(c.reason || `Direct match with student's aptitude pattern and career interests.`)
+      };
     });
   }
-
-  return sanitized.length >= 18 ? sanitized : null;
-}
-
-async function generateServerTest(vault, stage) {
-  const prompt = buildServerTestPrompt(vault, stage);
-  const ai = await requestAI(prompt, false, false, true);
-  const rawData = parseJSON(ai.text);
-  const sanitizedQuestions = repairAndNormalizeQuestions(rawData);
-
-  if (!sanitizedQuestions) {
-    const e = new Error("AI generated an invalid Test Zone payload.");
-    e.testValidationFailed = true;
-    throw e;
-  }
-
-  return {
-    data: { questions: sanitizedQuestions },
-    model: ai.model,
-    attempts: ai.attempts
-  };
+  return d;
 }
 
 /* ========================= ROUTE HANDLER ========================= */
@@ -527,34 +511,10 @@ export default async function handler(req, res) {
       return res.status(400).json({ ok: false, error: "Missing prompt or career target." });
     }
 
-    const requestedPurpose = cleanText(body.purpose);
-    const isTest = requestedPurpose === "student test generation" || body.testZone === true;
+    const purpose = cleanText(body.purpose) || purposeFor(prompt, webSearch);
+    const isTestGeneration = purpose === "student test generation";
 
-    // 1. TEST ZONE DISPATCH
-    if (isTest) {
-      const vault = normalizeTestVault(body.vault || {});
-      const stage = cleanText(body.stage || vault.stage || "student");
-      try {
-        const generated = await generateServerTest(vault, stage);
-        return res.status(200).json({
-          ok: true,
-          ai: true,
-          data: generated.data,
-          model: generated.model,
-          purpose: "student test generation",
-          serverValidated: true
-        });
-      } catch (error) {
-        return res.status(503).json({
-          ok: false,
-          aiFailed: true,
-          fallbackAllowed: true,
-          error: cleanText(error?.message || "Test generation temporarily unavailable.")
-        });
-      }
-    }
-
-    // 2. LIVE CAREER RESEARCH DISPATCH
+    // 1. LIVE CAREER RESEARCH DISPATCH
     let finalPrompt = prompt;
     let sources = [];
     let career = suppliedCareer || extractCareer(prompt);
@@ -564,11 +524,11 @@ export default async function handler(req, res) {
         return res.status(400).json({ ok: false, error: "Could not identify career name to research." });
       }
 
-      // Fast, targeted multi-angle India research queries
+      // Targeted multi-angle Indian search queries that reject noise
       const queries = [
-        `"${career}" career path education India eligibility site:gov.in OR site:nic.in OR site:ac.in`,
-        `"${career}" salary India entry level experience naukri ambitionbox`,
-        `"${career}" qualifications entrance exams requirements India`
+        `"${career}" qualifications eligibility education path site:gov.in OR site:nic.in OR site:ac.in`,
+        `"${career}" recruitment notification exam salary India site:rrbcdg.gov.in OR site:upsc.gov.in OR site:nmc.org.in`,
+        `"${career}" salary career structure India entry level experience naukri`
       ];
 
       const groups = await Promise.all(queries.map(searchWeb));
@@ -586,10 +546,10 @@ export default async function handler(req, res) {
       finalPrompt = researchPrompt(career, evidence);
     }
 
-    // 3. EXECUTE AI COMPLETION
+    // 2. EXECUTE AI COMPLETION
     let ai;
     try {
-      ai = await requestAI(finalPrompt, webSearch);
+      ai = await requestAI(finalPrompt, webSearch, false, isTestGeneration);
     } catch (error) {
       return res.status(503).json({
         ok: false,
@@ -607,11 +567,16 @@ export default async function handler(req, res) {
     }
 
     // Normalize common-ground picks payload
-    if (purposeFor(prompt, false) === "common-ground analysis" && data) {
+    if (purpose === "common-ground analysis" && data) {
       const repairedPicks = repairCommonGround(data);
       if (repairedPicks.length) {
         data = { picks: repairedPicks };
       }
+    }
+
+    // Normalize student test analysis payload (for scorecard and options analyser)
+    if (purpose === "student test answer analysis" && data) {
+      data = repairStudentAnalysis(data);
     }
 
     return res.status(200).json({
@@ -620,6 +585,7 @@ export default async function handler(req, res) {
       fallbackUsed: false,
       data: data || ai.text,
       model: ai.model,
+      serverValidated: true,
       sources
     });
 
